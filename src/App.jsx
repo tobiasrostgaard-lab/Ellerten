@@ -1769,6 +1769,9 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const [hideChrome, setHideChrome] = useState(false);    // hide panels for more drawing space
   const [junctionShape, setJunctionShape] = useState('dot');  // dot|tee|corner — chosen before placing
   const [junctionSize, setJunctionSize] = useState(14);       // default size for new junctions
+  // Opacity per colour category (hex → 0..1) — mirrors per-segment opacity for the slider UI.
+  const [catPanel, setCatPanel] = useState(false);            // show network-category panel
+  const [catEdit, setCatEdit] = useState(null);               // network id whose objects are being edited
   const [bgLocked, setBgLocked] = useState(() => bgImage?.locked || false);  // lock background scale/position
   const [calibrating, setCalibrating] = useState(false);  // two-point scale calibration in progress
   const [calibPoints, setCalibPoints] = useState([]);     // world points clicked during calibration
@@ -1887,12 +1890,14 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     const svg = svgRef.current;
     try { svg?.setPointerCapture?.(e.pointerId); } catch (err) {}
     const r = svg.getBoundingClientRect();
-    const worldPerPxX = r.width > 0 ? bounds.w / r.width : 1;
-    const worldPerPxY = r.height > 0 ? bounds.h / r.height : 1;
+    // SVG uses default preserveAspectRatio "xMidYMid meet": the scale is uniform
+    // and equals the smaller of the two axis fits. world-per-px is the same on both axes.
+    const scale = Math.min(r.width / bounds.w, r.height / bounds.h) || 1;
+    const worldPerPx = scale > 0 ? 1 / scale : 1;
     panInfoRef.current = {
       startClientX: e.clientX, startClientY: e.clientY,
       startView: { ...bounds },
-      worldPerPxX, worldPerPxY,
+      worldPerPxX: worldPerPx, worldPerPxY: worldPerPx,
       pointerId: e.pointerId,
     };
     movedRef.current = false;
@@ -1922,6 +1927,161 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     });
   };
   const clearSelection = () => { setSelectedNodes([]); setSelectedSeg(null); };
+
+  // Effective colour of a segment (manual override or auto from tray width)
+  // Connected-network categories: segments that are physically connected form one
+  // category. All segments in a network share one colour (sizes may differ).
+  // Returns: { networks: [{ id, segIds:[], nodeIds:Set, color, widths:Set, count }],
+  //            segNet: { segId -> networkId } }
+  const networkInfo = useMemo(() => {
+    // Union-Find over nodes, joined by segments
+    const parent = {};
+    const find = (x) => { while (parent[x] !== undefined && parent[x] !== x) { parent[x] = parent[parent[x]] ?? parent[x]; x = parent[x]; } return x; };
+    const union = (a, b) => {
+      if (parent[a] === undefined) parent[a] = a;
+      if (parent[b] === undefined) parent[b] = b;
+      const ra = find(a), rb = find(b);
+      if (ra !== rb) parent[ra] = rb;
+    };
+    Object.values(lSegs).forEach(s => { union(s.from, s.to); });
+    // group segments by their root node
+    const groups = {};
+    Object.entries(lSegs).forEach(([id, s]) => {
+      const root = find(s.from);
+      if (!groups[root]) groups[root] = { id: root, segIds: [], nodeIds: new Set(), widths: new Set(), explicitColors: [] };
+      groups[root].segIds.push(id);
+      groups[root].nodeIds.add(s.from); groups[root].nodeIds.add(s.to);
+      const w = trayTypes[s.tray_type]?.width_mm;
+      if (w) groups[root].widths.add(w);
+      if (s.color) groups[root].explicitColors.push(s.color);
+    });
+    // determine each network's colour: explicit colour wins, else widest tray's width-colour
+    const segNet = {};
+    // Distinct default colour per network so unconnected runs are visually separable.
+    // A stable hash of the network's root id picks from a palette. Explicit colour wins.
+    const palette = ['#1565C0', '#2e7d32', '#c62828', '#f9a825', '#6a1b9a', '#00838f', '#37474F', '#e91e63', '#5d4037', '#0097a7', '#7b1fa2', '#ef6c00'];
+    const hashIdx = (str) => { let h = 0; for (let i = 0; i < str.length; i++) { h = (h * 31 + str.charCodeAt(i)) >>> 0; } return h % palette.length; };
+    const networks = Object.values(groups).map(g => {
+      let color;
+      if (g.explicitColors.length) color = g.explicitColors[g.explicitColors.length - 1];
+      else color = palette[hashIdx(String(g.id))];
+      g.segIds.forEach(sid => { segNet[sid] = g.id; });
+      return { id: g.id, segIds: g.segIds, nodeIds: g.nodeIds, color, widths: g.widths, count: g.segIds.length };
+    }).sort((a,b)=>b.count-a.count);
+    return { networks, segNet, byId: Object.fromEntries(networks.map(n=>[n.id,n])) };
+  }, [lSegs, trayTypes]);
+
+  // Colour shown for a segment = its network's colour (so connected = same colour)
+  const segColor = (s, id) => {
+    const netId = id ? networkInfo.segNet[id] : null;
+    if (netId && networkInfo.byId[netId]) return networkInfo.byId[netId].color;
+    return s.color || '#1565C0';
+  };
+
+  // Network categories for the panel (connected networks, each one colour)
+  const colorCategories = useMemo(() => networkInfo.networks.map(n => ({
+    id: n.id, color: n.color, count: n.count, widths: n.widths, segIds: n.segIds,
+  })), [networkInfo]);
+
+  // Orthogonalise: snap segments to horizontal/vertical based on their dominant axis.
+  // We move node positions so connected segments become axis-aligned. Works on a set
+  // of segment IDs. Uses a simple pass: for each segment, if it's closer to horizontal,
+  // average the Y of its two endpoints; if vertical, average the X.
+  const straightenSegments = (segIds) => {
+    setLNodes(prevNodes => {
+      const nodes = { ...prevNodes };
+      const settled = new Set();   // nodes already pinned by an earlier segment
+      // Process segments in order; for each, make it horizontal or vertical by
+      // moving the not-yet-settled end onto the settled end's axis. If both ends
+      // are free, move them to their shared midpoint axis.
+      segIds.forEach(id => {
+        const s = lSegs[id];
+        if (!s) return;
+        const a = nodes[s.from], b = nodes[s.to];
+        if (!a || !b) return;
+        const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y);
+        const horizontal = dx >= dy;   // closer to horizontal → make it horizontal
+        const aSettled = settled.has(s.from);
+        const bSettled = settled.has(s.to);
+        if (horizontal) {
+          // share a common Y
+          let y;
+          if (aSettled && !bSettled) y = a.y;
+          else if (bSettled && !aSettled) y = b.y;
+          else y = Math.round((a.y + b.y) / 2);
+          nodes[s.from] = { ...nodes[s.from], y };
+          nodes[s.to] = { ...nodes[s.to], y };
+        } else {
+          // share a common X
+          let x;
+          if (aSettled && !bSettled) x = a.x;
+          else if (bSettled && !aSettled) x = b.x;
+          else x = Math.round((a.x + b.x) / 2);
+          nodes[s.from] = { ...nodes[s.from], x };
+          nodes[s.to] = { ...nodes[s.to], x };
+        }
+        settled.add(s.from);
+        settled.add(s.to);
+      });
+      return nodes;
+    });
+  };
+
+  // Straighten one segment
+  const straightenOne = (id) => straightenSegments([id]);
+  // Straighten all segments of a connected network
+  const straightenNetwork = (netId) => {
+    const net = networkInfo.byId[netId];
+    if (net) straightenSegments(net.segIds);
+  };
+  // Straighten everything
+  const straightenAll = () => straightenSegments(Object.keys(lSegs));
+
+  // Set opacity for a whole network — written onto each segment in the network
+  const setNetworkOpacity = (netId, op) => {
+    const net = networkInfo.byId[netId];
+    if (!net) return;
+    setLSegs(prev => {
+      const next = { ...prev };
+      net.segIds.forEach(id => { if (next[id]) next[id] = { ...next[id], opacity: op }; });
+      return next;
+    });
+  };
+
+  // Set colour for a whole network — propagates to every segment in it
+  const setNetworkColor = (netId, color) => {
+    const net = networkInfo.byId[netId];
+    if (!net) return;
+    setLSegs(prev => {
+      const next = { ...prev };
+      net.segIds.forEach(id => { if (next[id]) next[id] = { ...next[id], color: color || undefined }; });
+      return next;
+    });
+  };
+
+  // Set a common tray type (and thus width) on all segments in a network
+  const setNetworkTrayType = (netId, tray_type) => {
+    const net = networkInfo.byId[netId];
+    if (!net) return;
+    setLSegs(prev => {
+      const next = { ...prev };
+      net.segIds.forEach(id => { if (next[id]) next[id] = { ...next[id], tray_type }; });
+      return next;
+    });
+  };
+
+  // Set a common size on all junction nodes in a network
+  const setNetworkNodeSize = (netId, size) => {
+    const net = networkInfo.byId[netId];
+    if (!net) return;
+    setLNodes(prev => {
+      const next = { ...prev };
+      net.nodeIds.forEach(nid => {
+        if (next[nid] && (next[nid].kind || 'junction') === 'junction') next[nid] = { ...next[nid], size };
+      });
+      return next;
+    });
+  };
 
   // Canvas tap — place node of the active kind
   const onCanvasTap = (e) => {
@@ -2061,7 +2221,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     const svg = svgRef.current;
     try { svg?.setPointerCapture?.(e.pointerId); } catch (err) {}
     const p = getPoint(e);
-    dragInfoRef.current = { id, offsetX: p.x - lNodes[id].x, offsetY: p.y - lNodes[id].y, startX: p.x, startY: p.y, pointerId: e.pointerId, canMove: mode === 'edit' };
+    dragInfoRef.current = { id, offsetX: p.x - lNodes[id].x, offsetY: p.y - lNodes[id].y, startX: p.x, startY: p.y, startClientX: e.clientX, startClientY: e.clientY, pointerId: e.pointerId, canMove: mode === 'edit' };
     movedRef.current = false;
     setDragging(id);
   };
@@ -2152,10 +2312,11 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         movedRef.current = true;
         return;
       }
-      // Ignore sub-threshold jitter so a click isn't mistaken for a drag
-      if (!movedRef.current && di.startX !== undefined) {
-        const moveDist = Math.hypot(p.x - di.startX, p.y - di.startY);
-        if (moveDist < 3) return;
+      // Ignore sub-threshold jitter so a tap isn't mistaken for a drag.
+      // Measure in screen pixels (zoom-independent) using the tracked client coords.
+      if (!movedRef.current && di.startClientX !== undefined) {
+        const moveDistPx = Math.hypot(e.clientX - di.startClientX, e.clientY - di.startClientY);
+        if (moveDistPx < 6) return;
       }
       if (di.kind === 'waypoint') {
         const nx = Math.round(p.x - di.offsetX);
@@ -2203,11 +2364,13 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       if (pointersRef.current.size === 1 && mode === 'pan') {
         const [remaining] = Array.from(pointersRef.current.values());
         const r = svg.getBoundingClientRect();
+        const scale = Math.min(r.width / bounds.w, r.height / bounds.h) || 1;
+        const wpp = scale > 0 ? 1 / scale : 1;
         panInfoRef.current = {
           startClientX: remaining.x, startClientY: remaining.y,
           startView: { ...bounds },
-          worldPerPxX: r.width > 0 ? bounds.w / r.width : 1,
-          worldPerPxY: r.height > 0 ? bounds.h / r.height : 1,
+          worldPerPxX: wpp,
+          worldPerPxY: wpp,
           pointerId: null,
         };
       }
@@ -2235,19 +2398,20 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
           });
         }
       } else if (!movedRef.current) {
-        // A tap (no drag) on a node — detect double-tap to open editor (any mode)
+        // A tap (no drag) on a node.
         const now = Date.now();
-        if (nodeTapRef.current.id === di.id && now - nodeTapRef.current.t < 400) {
+        const isDouble = nodeTapRef.current.id === di.id && now - nodeTapRef.current.t < 400;
+        if (isDouble) {
           nodeTapRef.current = { id: null, t: 0 };
-          // If this node is part of a multi-selection, edit all of them together
-          if (selectedNodes.length > 1 && selectedNodes.includes(di.id)) {
+          // Double-tap: edit. If part of a multi-selection, edit all together.
+          if (mode === 'edit' && selectedNodes.length > 1 && selectedNodes.includes(di.id)) {
             setMultiEdit({ kind: lNodes[selectedNodes[0]]?.kind || 'junction' });
           } else {
             setEditNode(di.id);
           }
         } else {
           nodeTapRef.current = { id: di.id, t: now };
-          // Single tap in edit mode also toggles multi-select membership
+          // Single tap in edit mode toggles multi-select membership (no upper limit)
           if (mode === 'edit') toggleSelectNode(di.id);
         }
       }
@@ -2544,7 +2708,22 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     setEditNode(null);
   };
   const updateNode = (id, data) => { setLNodes({ ...lNodes, [id]: { ...lNodes[id], ...data } }); };
-  const updateSeg = (id, data) => { setLSegs({ ...lSegs, [id]: { ...lSegs[id], ...data } }); setEditSeg(null); };
+  const updateSeg = (id, data) => {
+    setLSegs(prev => {
+      const next = { ...prev, [id]: { ...prev[id], ...data } };
+      // If a colour was set, propagate it to the whole connected network
+      if ('color' in data) {
+        const netId = networkInfo.segNet[id];
+        if (netId && networkInfo.byId[netId]) {
+          networkInfo.byId[netId].segIds.forEach(sid => {
+            if (next[sid]) next[sid] = { ...next[sid], color: data.color || undefined };
+          });
+        }
+      }
+      return next;
+    });
+    setEditSeg(null);
+  };
   const deleteSeg = (id) => { const sg = {...lSegs}; delete sg[id]; setLSegs(sg); setEditSeg(null); };
   // Add a bend (waypoint) at the midpoint of the segment's current chain
   const addWaypoint = (id) => {
@@ -2621,6 +2800,8 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         <button onClick={()=>zoomBy(1/1.25)} className="px-2 py-1.5 rounded text-xs bg-stone-200"><ZoomOut size={14}/></button>
         <button onClick={()=>zoomBy(1.25)} className="px-2 py-1.5 rounded text-xs bg-stone-200"><ZoomIn size={14}/></button>
         <button onClick={fitView} className="px-2 py-1.5 rounded text-xs bg-stone-200">Fit</button>
+        <button onClick={()=>setCatPanel(p=>!p)} className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${catPanel?'bg-blue-100 text-blue-900':'bg-stone-200 text-stone-700'}`} title="Farve-kategorier & opacitet"><Layers size={13}/> Kategorier</button>
+        <button onClick={straightenAll} className="px-2 py-1.5 rounded text-xs bg-amber-100 text-amber-900 flex items-center gap-1" title="Ret alle føringsveje op (vinkelret)"><GitBranch size={13}/> Ret alt op</button>
         <div className="ml-auto">
           <button onClick={renumber} className="px-2 py-1.5 rounded text-xs bg-purple-100 text-purple-900 flex items-center gap-1" title="Renumber all segments"><RefreshCw size={12}/> WC###</button>
         </div>
@@ -2750,6 +2931,65 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         </div>
       )}
 
+      {/* Network panel: each connected føringsvej-net is one category (one colour) */}
+      {catPanel && (
+        <div className="bg-white border-b shadow-sm px-3 py-2 max-h-[45vh] overflow-y-auto">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-semibold text-blue-900 flex items-center gap-1"><Layers size={15}/> Føringsvej-netværk</span>
+            <button onClick={()=>setCatPanel(false)} className="text-xs px-2 py-1 bg-stone-100 rounded">Luk</button>
+          </div>
+          {colorCategories.length === 0 ? (
+            <p className="text-xs text-stone-500">Ingen føringsveje endnu.</p>
+          ) : (
+            <div className="space-y-2">
+              {colorCategories.map((cat, idx) => {
+                const firstSeg = lSegs[cat.segIds[0]];
+                const op = firstSeg?.opacity ?? 1;
+                const widths = Array.from(cat.widths).sort((a,b)=>a-b);
+                const palette = ['#1565C0', '#2e7d32', '#c62828', '#f9a825', '#6a1b9a', '#00838f', '#37474F', '#e91e63'];
+                return (
+                  <div key={cat.id} className="border border-stone-200 rounded-lg p-2">
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="inline-block w-5 h-5 rounded-full border border-stone-300 shrink-0" style={{ background: cat.color }}/>
+                      <span className="text-xs font-semibold text-stone-700">Net {idx+1}</span>
+                      <span className="text-xs text-stone-400">({cat.count} segm.{widths.length ? ` · ${widths.join('/')} mm` : ''})</span>
+                      <button onClick={()=>straightenNetwork(cat.id)}
+                              className="ml-auto text-xs px-2 py-1 bg-amber-100 text-amber-900 rounded flex items-center gap-1">
+                        <GitBranch size={11}/> Ret op
+                      </button>
+                    </div>
+                    {/* Network colour swatches */}
+                    <div className="flex items-center gap-1.5 flex-wrap mb-1.5">
+                      <span className="text-[11px] text-stone-500">Farve:</span>
+                      {palette.map(c => (
+                        <button key={c} onClick={()=>setNetworkColor(cat.id, c)}
+                                className={`w-5 h-5 rounded-full border-2 ${cat.color===c ? 'border-blue-900 ring-1 ring-blue-300' : 'border-stone-300'}`}
+                                style={{ background: c }}/>
+                      ))}
+                      <input type="color" value={/^#/.test(cat.color)?cat.color:'#1565C0'} onChange={e=>setNetworkColor(cat.id, e.target.value)}
+                             className="w-5 h-5 rounded cursor-pointer border border-stone-300" title="Egen farve"/>
+                      <button onClick={()=>setNetworkColor(cat.id, '')} className="text-[11px] text-stone-400 underline ml-1" title="Brug auto-farve fra bredde">auto</button>
+                    </div>
+                    <label className="flex items-center gap-2 text-xs text-stone-600">
+                      Opacitet
+                      <input type="range" min="10" max="100" value={op*100}
+                             onChange={e=>setNetworkOpacity(cat.id, Number(e.target.value)/100)}
+                             className="flex-1"/>
+                      <span className="w-9 text-right">{Math.round(op*100)}%</span>
+                    </label>
+                    <button onClick={()=>setCatEdit(cat.id)}
+                            className="w-full mt-1.5 py-1.5 bg-blue-900 text-white rounded text-xs font-semibold flex items-center justify-center gap-1">
+                      <Edit2 size={12}/> Rediger alle objekter i Net {idx+1}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <p className="text-[11px] text-stone-400 mt-2">Forbundne føringsveje udgør ét netværk og deler én farve (men kan have forskellige bredder). "Ret op" gør netværket vinkelret.</p>
+        </div>
+      )}
+
       {/* Help bar */}
       {!hideChrome && (
       <div className="bg-blue-50 text-blue-900 text-xs text-center py-1.5 px-2">
@@ -2832,16 +3072,17 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
             const mid = chain.length % 2 === 0
               ? { x: (chain[midIdx-1].x + chain[midIdx].x)/2, y: (chain[midIdx-1].y + chain[midIdx].y)/2 }
               : chain[midIdx];
-            // Tray width drives both the line thickness and its colour
+            // Tray width drives the line thickness; colour comes from the network
+            // (all connected segments share one colour).
             const trayW = trayTypes[s.tray_type]?.width_mm;
-            const autoColor = trayWidthColor(trayW);
             const autoStroke = trayWidthStroke(trayW);
-            // A manually chosen colour overrides the width-based colour
-            const segStroke = isSel ? '#a04500' : (s.color || autoColor);
+            const effColor = segColor(s, id);
+            const segStroke = isSel ? '#a04500' : effColor;
             const segWidth = isSel ? autoStroke + 2 : autoStroke;
+            const segOpacity = s.opacity ?? 1;
             const dash = s.lineStyle === 'dashed' ? '10,6' : s.lineStyle === 'dotted' ? '2,5' : undefined;
             return (
-              <g key={id} onClick={(e)=>onSegTap(e, id)} onDoubleClick={(e)=>onSegDouble(e, id)} style={{ cursor:'pointer' }}>
+              <g key={id} onClick={(e)=>onSegTap(e, id)} onDoubleClick={(e)=>onSegDouble(e, id)} style={{ cursor:'pointer', opacity: isSel ? 1 : segOpacity }}>
                 <polyline points={ptsStr} fill="none"
                           stroke={segStroke} strokeWidth={segWidth} strokeLinecap="round" strokeLinejoin="round"
                           strokeDasharray={dash}/>
@@ -2900,17 +3141,23 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
               if (!cableFrom) dim = kind !== 'board';            // start: only boards
               else dim = kind === 'junction';                    // end: boards or loads, not junctions
             }
-            // For junctions (point/T/corner): colour follows tray width (like segments),
-            // unless a manual colour is set. Boards/loads keep their default colour.
+            // For junctions (point/T/corner): colour follows the connected network,
+            // so a junction matches the føringsveje it sits on. Manual colour wins.
             let defStroke;
             if (kind === 'junction') {
-              const jw = trayTypes[p.tray_type]?.width_mm;
-              defStroke = jw ? trayWidthColor(jw) : '#1565C0';
+              // find a segment touching this node and use its network colour
+              const touchingSeg = Object.entries(lSegs).find(([sid, s]) => s.from === id || s.to === id);
+              if (touchingSeg) {
+                const netId = networkInfo.segNet[touchingSeg[0]];
+                defStroke = (netId && networkInfo.byId[netId]) ? networkInfo.byId[netId].color : '#1565C0';
+              } else {
+                defStroke = '#1565C0';
+              }
             } else {
               defStroke = kind==='board' ? '#0B3D91' : '#37474F';
             }
             const stroke = isFrom ? '#a04500' : (isSel ? '#9C5700' : (p.color || defStroke));
-            const fill = isFrom ? '#FFE0B2' : (isSel ? '#FFF3CD' : (p.color ? lightenColor(p.color) : (kind==='board' ? '#E3F2FD' : kind==='load' ? '#ECEFF1' : (kind==='junction' && p.tray_type ? lightenColor(defStroke) : '#fff'))));
+            const fill = isFrom ? '#FFE0B2' : (isSel ? '#FFF3CD' : (p.color ? lightenColor(p.color) : (kind==='board' ? '#E3F2FD' : kind==='load' ? '#ECEFF1' : (kind==='junction' ? lightenColor(defStroke) : '#fff'))));
             const common = {
               onClick:(e)=>onNodeTap(e, id),
               onDoubleClick:(e)=>onNodeDouble(e, id),
@@ -3037,7 +3284,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
           </div>
         )}
 
-        {/* Tray-width colour legend — shows the widths actually in use */}
+        {/* Tray-width legend — width is shown by line thickness (colour = network) */}
         {(() => {
           const widthsUsed = Array.from(new Set(
             Object.values(lSegs).map(s => trayTypes[s.tray_type]?.width_mm).filter(Boolean)
@@ -3045,13 +3292,14 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
           if (widthsUsed.length === 0) return null;
           return (
             <div className="absolute bottom-2 right-2 bg-white/90 backdrop-blur rounded-lg shadow px-2 py-1.5 text-xs space-y-1 pointer-events-none">
-              <div className="font-semibold text-stone-600 mb-0.5">Bakkebredde</div>
+              <div className="font-semibold text-stone-600 mb-0.5">Bredde = tykkelse</div>
               {widthsUsed.map(w => (
                 <div key={w} className="flex items-center gap-1.5">
-                  <svg width="26" height="10"><line x1="2" y1="5" x2="24" y2="5" stroke={trayWidthColor(w)} strokeWidth={Math.min(8, trayWidthStroke(w))} strokeLinecap="round"/></svg>
+                  <svg width="26" height="12"><line x1="2" y1="6" x2="24" y2="6" stroke="#78716c" strokeWidth={Math.min(9, trayWidthStroke(w))} strokeLinecap="round"/></svg>
                   <span>{w} mm</span>
                 </div>
               ))}
+              <div className="text-[10px] text-stone-400 pt-0.5 border-t border-stone-200 mt-0.5">Farve = netværk</div>
             </div>
           );
         })()}
@@ -3112,7 +3360,20 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       />}
 
       {/* Edit segment dialog */}
-      {editSeg && <SegEditDialog id={editSeg} setId={setEditSeg} lSegs={lSegs} trayTypes={trayTypes} updateSeg={updateSeg} deleteSeg={deleteSeg} addWaypoint={addWaypoint} removeWaypoint={removeWaypoint}/>}
+      {editSeg && <SegEditDialog id={editSeg} setId={setEditSeg} lSegs={lSegs} trayTypes={trayTypes} updateSeg={updateSeg} deleteSeg={deleteSeg} addWaypoint={addWaypoint} removeWaypoint={removeWaypoint} straightenOne={straightenOne}/>}
+      {catEdit && networkInfo.byId[catEdit] && (
+        <CategoryEditModal
+          net={networkInfo.byId[catEdit]}
+          netIndex={colorCategories.findIndex(c => c.id === catEdit)}
+          lSegs={lSegs} lNodes={lNodes} trayTypes={trayTypes}
+          close={()=>setCatEdit(null)}
+          openSeg={(id)=>{ setCatEdit(null); setEditSeg(id); }}
+          openNode={(id)=>{ setCatEdit(null); setEditNode(id); }}
+          setCommonTrayType={(tt)=>setNetworkTrayType(catEdit, tt)}
+          setCommonNodeSize={(sz)=>setNetworkNodeSize(catEdit, sz)}
+          setNetworkColor={(c)=>setNetworkColor(catEdit, c)}
+        />
+      )}
 
       {/* Calibration in-progress banner */}
       {calibrating && (
@@ -3305,23 +3566,17 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
               </div>
             </div>
 
-            {/* Tray size — determines the colour (like segments) */}
+            {/* Tray size for the junction (informational; colour follows the network) */}
             <div>
-              <label className="block text-xs font-semibold text-stone-600 mb-1">Bakkestørrelse (bestemmer farve)</label>
+              <label className="block text-xs font-semibold text-stone-600 mb-1">Bakkestørrelse</label>
               <select value={meta.tray_type} onChange={e=>setM('tray_type', e.target.value)}
                       className="w-full border border-stone-300 rounded-lg px-2 py-2 text-sm">
-                <option value="">— ingen (standard blå) —</option>
+                <option value="">— ingen —</option>
                 {trayTypes && Object.keys(trayTypes).map(t => (
                   <option key={t} value={t}>{t} ({trayTypes[t].width_mm} mm)</option>
                 ))}
               </select>
-              {meta.tray_type && trayTypes[meta.tray_type] && (
-                <div className="flex items-center gap-2 mt-1 text-xs text-stone-600">
-                  <span>Bredde {trayTypes[meta.tray_type].width_mm} mm →</span>
-                  <span className="inline-block w-5 h-5 rounded-full border border-stone-300" style={{ background: trayWidthColor(trayTypes[meta.tray_type].width_mm) }}/>
-                  <span>auto-farve</span>
-                </div>
-              )}
+              <p className="text-[11px] text-stone-400 mt-1">Farven følger automatisk det netværk knuden er forbundet til.</p>
             </div>
 
             {(meta.shape === 'tee' || meta.shape === 'corner') && (
@@ -3483,7 +3738,107 @@ function MultiEditModal({ kind, ids, close, applyToAll, deleteAll }) {
   );
 }
 
-function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addWaypoint, removeWaypoint }) {
+function CategoryEditModal({ net, netIndex, lSegs, lNodes, trayTypes, close, openSeg, openNode, setCommonTrayType, setCommonNodeSize, setNetworkColor }) {
+  const [commonTT, setCommonTT] = useState('');
+  const [commonSize, setCommonSize] = useState('');
+  const segIds = net.segIds;
+  const nodeIds = Array.from(net.nodeIds);
+  const junctionIds = nodeIds.filter(id => (lNodes[id]?.kind || 'junction') === 'junction');
+  const endpointIds = nodeIds.filter(id => { const k = lNodes[id]?.kind || 'junction'; return k === 'board' || k === 'load'; });
+  return (
+    <div className="absolute inset-0 bg-black/50 z-20 flex items-end lg:items-center justify-center p-4" onClick={close}>
+      <div className="bg-white p-4 rounded-2xl w-full lg:max-w-lg max-h-[88vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center gap-2 mb-1">
+          <span className="inline-block w-5 h-5 rounded-full border border-stone-300" style={{ background: net.color }}/>
+          <h3 className="font-bold text-blue-900">Net {netIndex+1} — {segIds.length} føringsveje</h3>
+        </div>
+        <p className="text-xs text-stone-500 mb-3">Redigér hvert objekt individuelt, eller sæt en fælles størrelse for hele netværket.</p>
+
+        {/* Common settings for the whole network */}
+        <div className="border border-blue-100 bg-blue-50/40 rounded-lg p-2 mb-3 space-y-2">
+          <div className="text-xs font-semibold text-blue-900">Fælles for hele netværket</div>
+          <div>
+            <label className="block text-[11px] text-stone-600 mb-1">Fælles bakkestørrelse (bredde)</label>
+            <div className="flex gap-2">
+              <select value={commonTT} onChange={e=>setCommonTT(e.target.value)}
+                      className="flex-1 border border-stone-300 rounded-lg px-2 py-1.5 text-sm">
+                <option value="">— vælg —</option>
+                {Object.keys(trayTypes).map(t => <option key={t} value={t}>{t} ({trayTypes[t].width_mm} mm)</option>)}
+              </select>
+              <button onClick={()=>{ if (commonTT) setCommonTrayType(commonTT); }}
+                      disabled={!commonTT}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${commonTT?'bg-blue-900 text-white':'bg-stone-200 text-stone-400'}`}>Anvend</button>
+            </div>
+          </div>
+          <div>
+            <label className="block text-[11px] text-stone-600 mb-1">Fælles knude-størrelse {commonSize ? `(${commonSize}px)` : ''}</label>
+            <div className="flex gap-2 items-center">
+              <input type="range" min="6" max="40" value={commonSize || 14} onChange={e=>setCommonSize(e.target.value)} className="flex-1"/>
+              <button onClick={()=>{ if (commonSize) setCommonNodeSize(Number(commonSize)); }}
+                      disabled={!commonSize}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${commonSize?'bg-blue-900 text-white':'bg-stone-200 text-stone-400'}`}>Anvend</button>
+            </div>
+          </div>
+        </div>
+
+        {/* Individual segments */}
+        <div className="mb-3">
+          <div className="text-xs font-semibold text-stone-700 mb-1">Føringsveje ({segIds.length})</div>
+          <div className="space-y-1">
+            {segIds.map(id => {
+              const s = lSegs[id];
+              if (!s) return null;
+              const w = trayTypes[s.tray_type]?.width_mm;
+              return (
+                <button key={id} onClick={()=>openSeg(id)}
+                        className="w-full flex items-center gap-2 px-2 py-2 bg-stone-50 hover:bg-stone-100 rounded-lg text-left text-sm">
+                  <span className="font-semibold text-stone-700">{id}</span>
+                  <span className="text-xs text-stone-500">{s.from} → {s.to}</span>
+                  <span className="text-xs text-stone-400 ml-auto">{w ? `${w} mm` : ''} · {s.length_m} m</span>
+                  <Edit2 size={13} className="text-blue-700"/>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Junctions in the network */}
+        {junctionIds.length > 0 && (
+          <div className="mb-3">
+            <div className="text-xs font-semibold text-stone-700 mb-1">Knuder ({junctionIds.length})</div>
+            <div className="flex flex-wrap gap-1">
+              {junctionIds.map(id => (
+                <button key={id} onClick={()=>openNode(id)}
+                        className="px-2.5 py-1.5 bg-stone-50 hover:bg-stone-100 rounded-lg text-xs font-semibold text-stone-700 flex items-center gap-1">
+                  {id} <Edit2 size={11} className="text-blue-700"/>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Boards/loads at the ends */}
+        {endpointIds.length > 0 && (
+          <div className="mb-3">
+            <div className="text-xs font-semibold text-stone-700 mb-1">Tavler / laster ({endpointIds.length})</div>
+            <div className="flex flex-wrap gap-1">
+              {endpointIds.map(id => (
+                <button key={id} onClick={()=>openNode(id)}
+                        className="px-2.5 py-1.5 bg-stone-50 hover:bg-stone-100 rounded-lg text-xs font-semibold text-stone-700 flex items-center gap-1">
+                  {id} <Edit2 size={11} className="text-blue-700"/>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <button onClick={close} className="w-full py-3 bg-blue-900 text-white rounded-lg font-semibold">Færdig</button>
+      </div>
+    </div>
+  );
+}
+
+function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addWaypoint, removeWaypoint, straightenOne }) {
   const s = lSegs[id];
   const [length_m, setL] = useState(s.length_m);
   const [tray_type, setTT] = useState(s.tray_type);
@@ -3496,18 +3851,17 @@ function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addW
         <h3 className="font-bold mb-3 text-blue-900">Segment {id}</h3>
         <p className="text-xs text-stone-500 mb-3">{s.from} → {s.to}</p>
         <FormField label="Længde [m]" type="number" step="0.5" value={length_m} onChange={setL}/>
-        <Selector label="Tray type (bredde bestemmer farve & tykkelse)" value={tray_type} onChange={setTT} options={Object.keys(trayTypes)}/>
+        <Selector label="Tray type (bredden bestemmer tykkelsen)" value={tray_type} onChange={setTT} options={Object.keys(trayTypes)}/>
 
-        {/* Auto preview from tray width */}
+        {/* Preview: thickness from width; colour shown is the current/own colour */}
         {(() => {
           const w = trayTypes[tray_type]?.width_mm;
-          const c = trayWidthColor(w);
           const t = trayWidthStroke(w);
           return (
             <div className="flex items-center gap-2 mt-1 mb-1 text-xs text-stone-600">
               <span>Bredde {w} mm →</span>
-              <svg width="60" height="16"><line x1="4" y1="8" x2="56" y2="8" stroke={color || c} strokeWidth={t} strokeLinecap="round"/></svg>
-              <span>{color ? 'egen farve' : 'auto-farve'}</span>
+              <svg width="60" height="16"><line x1="4" y1="8" x2="56" y2="8" stroke={color || '#78716c'} strokeWidth={t} strokeLinecap="round"/></svg>
+              <span>{color ? 'egen farve' : 'tykkelse'}</span>
             </div>
           );
         })()}
@@ -3527,7 +3881,7 @@ function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addW
 
         {/* Colour — optional override of the width-based auto colour */}
         <div className="mt-2">
-          <label className="block text-xs font-semibold text-stone-600 mb-1">Farve <span className="font-normal text-stone-400">(valgfri — overstyrer auto-farve)</span></label>
+          <label className="block text-xs font-semibold text-stone-600 mb-1">Farve <span className="font-normal text-stone-400">(gælder hele netværket)</span></label>
           <div className="flex items-center gap-2 flex-wrap">
             {['', '#1565C0', '#2e7d32', '#c62828', '#f9a825', '#6a1b9a', '#00838f', '#37474F'].map(c => (
               <button key={c||'def'} onClick={()=>setColor(c)} title={c || 'Auto (fra bredde)'}
@@ -3559,6 +3913,12 @@ function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addW
           </div>
           <p className="text-[11px] text-stone-400 mt-1">Efter tilføjelse: træk det hvide punkt på føringsvejen for at placere knækket.</p>
         </div>
+
+        {/* Straighten this segment */}
+        <button onClick={()=>{ straightenOne(id); setId(null); }}
+                className="w-full mt-2 text-xs py-2 bg-amber-100 text-amber-900 rounded-lg font-semibold flex items-center justify-center gap-1">
+          <GitBranch size={13}/> Ret denne føringsvej op (vinkelret)
+        </button>
 
         <div className="flex gap-2 mt-3">
           <button onClick={()=>setId(null)} className="flex-1 py-3 border rounded-lg font-semibold">Annuller</button>
