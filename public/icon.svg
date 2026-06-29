@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="100" fill="#0B3D91"/>
+  <g stroke="#fff" stroke-width="20" stroke-linecap="round" fill="none">
+    <!-- main spine -->
+    <path d="M80 256 L432 256"/>
+    <!-- branches up -->
+    <path d="M180 256 L180 130"/>
+    <path d="M256 256 L256 100"/>
+    <path d="M332 256 L332 130"/>
+    <!-- branches down -->
+    <path d="M120 256 L120 380"/>
+    <path d="M220 256 L220 410"/>
+    <path d="M296 256 L296 380"/>
+    <path d="M392 256 L392 410"/>
+  </g>
+  <!-- nodes -->
+  <g fill="#FFE0B2" stroke="#fff" stroke-width="6">
+    <circle cx="180" cy="130" r="22"/>
+    <circle cx="256" cy="100" r="22"/>
+    <circle cx="332" cy="130" r="22"/>
+    <circle cx="120" cy="380" r="22"/>
+    <circle cx="220" cy="410" r="22"/>
+    <circle cx="296" cy="380" r="22"/>
+    <circle cx="392" cy="410" r="22"/>
+  </g>
+  <!-- main switchboard -->
+  <rect x="216" y="232" width="80" height="48" rx="6" fill="#FFE0B2" stroke="#fff" stroke-width="6"/>
+</svg>

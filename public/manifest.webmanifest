@@ -1,0 +1,19 @@
+{
+  "name": "Cable System Designer",
+  "short_name": "Cables",
+  "description": "Cable system design with IEC 81346, derating, voltage drop, short-circuit, LS division and Excel export",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#fafaf7",
+  "theme_color": "#0B3D91",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

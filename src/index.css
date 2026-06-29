@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+/* iOS safe areas */
+header { padding-top: env(safe-area-inset-top); }
+nav { padding-bottom: env(safe-area-inset-bottom); }
