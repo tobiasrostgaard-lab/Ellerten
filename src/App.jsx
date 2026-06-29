@@ -91,6 +91,36 @@ const DEFAULT_TRANSFORMER_TYPES = {
   'TR 400 kVA':  { S_kVA:400,  U_pri_kV:10, U_sec_V:400, uk_pct:4.0 },
 };
 const STANDARD_BREAKERS = [10,13,16,20,25,32,40,50,63,80,100,125,160,200,250,315,400,500,630,800,1000,1250,1600,2000,2500,3200,4000];
+
+// Each standard tray width reserves a specific colour, so the width can be read
+// off the drawing at a glance. Widths not listed fall back to the nearest band.
+const TRAY_WIDTH_COLORS = {
+  50:  '#9e9e9e',  // grey
+  100: '#1565C0',  // blue
+  150: '#00838f',  // teal
+  200: '#2e7d32',  // green
+  300: '#f9a825',  // amber
+  400: '#1565C0',  // blue
+  450: '#6a1b9a',  // purple
+  500: '#2e7d32',  // green
+  600: '#c62828',  // red
+  800: '#37474F',  // dark slate
+};
+// Colour for a given tray width (mm) — nearest defined band if not exact.
+function trayWidthColor(width_mm) {
+  if (!width_mm) return '#1f6feb';
+  if (TRAY_WIDTH_COLORS[width_mm]) return TRAY_WIDTH_COLORS[width_mm];
+  const widths = Object.keys(TRAY_WIDTH_COLORS).map(Number);
+  let nearest = widths[0], best = Infinity;
+  for (const w of widths) { const d = Math.abs(w - width_mm); if (d < best) { best = d; nearest = w; } }
+  return TRAY_WIDTH_COLORS[nearest];
+}
+// Line thickness (SVG px) scaled from tray width (mm). Clamped to a sensible range.
+function trayWidthStroke(width_mm) {
+  if (!width_mm) return 5;
+  // 100 mm → ~3 px, 600 mm → ~12 px (roughly linear)
+  return Math.max(2.5, Math.min(16, 2 + width_mm / 55));
+}
 const DEFAULT_PROJECT = {
   site:'NewProj', location:'01', description:'New project',
   ambient_c:35, z_source_mohm:40, ls_threshold:0.30,
@@ -507,6 +537,15 @@ function inferKind(id) {
   if (/^(Q|HT|UT|UPS|PDU|T\d)/.test(id)) return 'board';
   if (/^(X|Rack|CRAH|Chiller|Light|BMS|SEC|FIRE|CCTV|M\d)/.test(id)) return 'load';
   return 'junction';
+}
+// Lighten a hex colour toward white for use as a fill behind a coloured stroke
+function lightenColor(hex) {
+  if (!hex || hex[0] !== '#') return '#fff';
+  const h = hex.replace('#', '');
+  const full = h.length === 3 ? h.split('').map(c=>c+c).join('') : h;
+  const r = parseInt(full.slice(0,2),16), g = parseInt(full.slice(2,4),16), b = parseInt(full.slice(4,6),16);
+  const mix = (c) => Math.round(c + (255 - c) * 0.82);
+  return `#${[mix(r),mix(g),mix(b)].map(v=>v.toString(16).padStart(2,'0')).join('')}`;
 }
 function nextNodeIdByKind(nodes, kind) {
   const prefix = kind === 'board' ? 'Q' : kind === 'load' ? 'X' : 'N';
@@ -1719,9 +1758,21 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const [lSegs, setLSegs] = useState(() => ({ ...segments }));
   const [lCables, setLCables] = useState(() => [...(cables || [])]);
   const [lBg, setLBg] = useState(() => bgImage || null);  // { dataUrl, x, y, scale, opacity, name }
+  // Undo history — snapshots of {nodes, segs, cables}. lBg excluded (large data URLs).
+  const undoStackRef = useRef([]);
+  const isUndoingRef = useRef(false);
+  const lastSnapRef = useRef('');
+  const [canUndo, setCanUndo] = useState(false);
   const [bgBusy, setBgBusy] = useState(false);            // PDF rendering in progress
   const [bgPanel, setBgPanel] = useState(false);          // show background adjust panel
   const [bgStatus, setBgStatus] = useState(null);         // visible status/error message
+  const [hideChrome, setHideChrome] = useState(false);    // hide panels for more drawing space
+  const [junctionShape, setJunctionShape] = useState('dot');  // dot|tee|corner — chosen before placing
+  const [junctionSize, setJunctionSize] = useState(14);       // default size for new junctions
+  const [bgLocked, setBgLocked] = useState(() => bgImage?.locked || false);  // lock background scale/position
+  const [calibrating, setCalibrating] = useState(false);  // two-point scale calibration in progress
+  const [calibPoints, setCalibPoints] = useState([]);     // world points clicked during calibration
+  const [calibDialog, setCalibDialog] = useState(null);   // { pixelDist } awaiting real distance input
   const [mode, setMode] = useState('junction'); // 'junction'|'board'|'load'|'connect'|'cable'|'edit'|'bg'
   const [connectFrom, setConnectFrom] = useState(null);
   const [cableFrom, setCableFrom] = useState(null);  // start node for cable routing
@@ -1730,12 +1781,17 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const [editCable, setEditCable] = useState(null);  // cable id being edited
   const [pending, setPending] = useState(null);     // pending new segment+cable
   const [editNode, setEditNode] = useState(null);
-  const [editSeg, setEditSeg] = useState(null);
+  const [selectedNodes, setSelectedNodes] = useState([]);   // multi-select (same kind only)
+  const [multiEdit, setMultiEdit] = useState(null);         // { kind } when editing multiple
+  const [editSeg, setEditSeg] = useState(null);       // segment being edited (dialog open)
+  const [selectedSeg, setSelectedSeg] = useState(null);  // segment selected (shows bend handles)
   const [dragging, setDragging] = useState(null);   // node id being dragged
   const [moved, setMoved] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
   const svgRef = useRef(null);
   const lastTapRef = useRef(0);
+  const nodeTapRef = useRef({ id: null, t: 0 });   // double-tap detection on nodes
+  const segTapRef = useRef({ id: null, t: 0 });    // double-tap detection on segments
   const movedRef = useRef(false);
   const dragInfoRef = useRef(null);  // { id, offsetX, offsetY, pointerId }
   const panInfoRef = useRef(null);   // { startClientX, startClientY, startView, ... }
@@ -1746,6 +1802,33 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   // 1 m = 20 px at zoom 1
   const PX_PER_M = 20;
   const GRID_M = 1; // grid spacing in meters
+
+  // Undo: capture a snapshot whenever nodes/segments/cables change (debounced via JSON compare)
+  useEffect(() => {
+    if (isUndoingRef.current) { isUndoingRef.current = false; return; }
+    const snap = JSON.stringify({ n: lNodes, s: lSegs, c: lCables });
+    if (snap === lastSnapRef.current) return;
+    if (lastSnapRef.current) {
+      undoStackRef.current.push(lastSnapRef.current);
+      if (undoStackRef.current.length > 50) undoStackRef.current.shift();
+      setCanUndo(true);
+    }
+    lastSnapRef.current = snap;
+  }, [lNodes, lSegs, lCables]);
+
+  const undo = () => {
+    const prev = undoStackRef.current.pop();
+    if (!prev) return;
+    isUndoingRef.current = true;
+    const state = JSON.parse(prev);
+    lastSnapRef.current = prev;
+    setLNodes(state.n || {});
+    setLSegs(state.s || {});
+    setLCables(state.c || []);
+    setSelectedNodes([]);
+    setSelectedSeg(null);
+    setCanUndo(undoStackRef.current.length > 0);
+  };
 
   // Map screen coords to SVG world coords using the SVG's own coordinate
   // transform matrix — exact regardless of viewBox aspect ratio / letterboxing.
@@ -1821,7 +1904,24 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     setConnectFrom(null);
     setCableFrom(null);
     setCableMsg(null);
+    if (m !== 'edit') { setSelectedNodes([]); setSelectedSeg(null); }
   };
+
+  // Multi-select: add/remove a node, but only within one category (kind)
+  const toggleSelectNode = (id) => {
+    setSelectedNodes(prev => {
+      const node = lNodes[id];
+      const kind = node?.kind || 'junction';
+      if (prev.includes(id)) return prev.filter(x => x !== id);
+      // If current selection is a different kind, start a fresh selection
+      if (prev.length > 0) {
+        const firstKind = lNodes[prev[0]]?.kind || 'junction';
+        if (firstKind !== kind) return [id];
+      }
+      return [...prev, id];
+    });
+  };
+  const clearSelection = () => { setSelectedNodes([]); setSelectedSeg(null); };
 
   // Canvas tap — place node of the active kind
   const onCanvasTap = (e) => {
@@ -1830,13 +1930,29 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     if (now - lastTapRef.current < 300) return;
     lastTapRef.current = now;
     if (movedRef.current || dragging) { movedRef.current = false; setMoved(false); return; }
-    if (e.target.tagName === 'circle' || e.target.tagName === 'rect' || e.target.tagName === 'line' || e.target.tagName === 'text' || e.target.tagName === 'polygon') return;
+    if (e.target.tagName === 'circle' || e.target.tagName === 'rect' || e.target.tagName === 'line' || e.target.tagName === 'text' || e.target.tagName === 'polygon' || e.target.tagName === 'polyline') return;
+    // Tapping empty canvas clears any segment selection
+    if (selectedSeg) setSelectedSeg(null);
     const p = getPoint(e);
+    // Scale calibration: collect two points, then ask for the real-world distance
+    if (calibrating) {
+      const pts = [...calibPoints, { x: p.x, y: p.y }];
+      if (pts.length >= 2) {
+        const pixelDist = Math.sqrt((pts[0].x-pts[1].x)**2 + (pts[0].y-pts[1].y)**2);
+        setCalibPoints(pts);
+        setCalibDialog({ pixelDist });
+        setCalibrating(false);
+      } else {
+        setCalibPoints(pts);
+      }
+      return;
+    }
     if (mode === 'junction' || mode === 'board' || mode === 'load') {
       const id = nextNodeIdByKind(lNodes, mode);
       const base = { x: Math.round(p.x), y: Math.round(p.y), kind: mode };
-      if (mode === 'board') { base.board_type = 'Sub-board'; base.In_main = 0; }
-      if (mode === 'load') { base.function = 'Socket circuit'; base.V = 230; base.phases = 1; base.Ib = 0; base.In = 0; base.cos_phi = 0.9; }
+      if (mode === 'board') { base.board_type = 'Sub-board'; base.In_main = 0; base.size = 14; }
+      if (mode === 'load') { base.function = 'Socket circuit'; base.V = 230; base.phases = 1; base.Ib = 0; base.In = 0; base.cos_phi = 0.9; base.size = 14; }
+      if (mode === 'junction') { base.shape = junctionShape; base.size = junctionSize; base.rotation = 0; }  // dot|tee|corner
       setLNodes({ ...lNodes, [id]: base });
       // auto-open editor for boards/loads so user can fill in details
       if (mode === 'board' || mode === 'load') setEditNode(id);
@@ -1850,6 +1966,8 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const onNodeTap = (e, id) => {
     e.stopPropagation();
     if (movedRef.current) { movedRef.current = false; setMoved(false); return; }
+    // Edit mode is handled in pointer-up (click events are unreliable with pointer capture)
+    if (mode === 'edit') return;
     if (mode === 'connect') {
       if (!connectFrom) setConnectFrom(id);
       else if (connectFrom === id) setConnectFrom(null);
@@ -1901,14 +2019,41 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         });
         setCableFrom(null);
       }
-    } else if (mode === 'edit') {
-      setEditNode(id);
     }
   };
 
-  // Drag node — pointer capture on the SVG root, move/up handled at root level.
-  const startDrag = (e, id) => {
+  // Double-click opens the editor — only in edit mode (mouse)
+  const onNodeDouble = (e, id) => {
+    e.stopPropagation();
+    if (mode === 'edit') setEditNode(id);
+  };
+  const onSegDouble = (e, id) => {
+    e.stopPropagation();
+    if (mode === 'edit') setEditSeg(id);
+  };
+
+  const onSegTap = (e, id) => {
+    e.stopPropagation();
+    if (movedRef.current) { movedRef.current = false; return; }
     if (mode !== 'edit') return;
+    // Double-tap/double-click opens the edit dialog
+    const now = Date.now();
+    if (segTapRef.current.id === id && now - segTapRef.current.t < 350) {
+      segTapRef.current = { id: null, t: 0 };
+      setEditSeg(id);
+      return;
+    }
+    segTapRef.current = { id, t: now };
+    // A single tap selects the segment (shows bend handles)
+    setSelectedSeg(id);
+  };
+
+  // Drag node — pointer capture on the SVG root, move/up handled at root level.
+  // Runs in every mode so double-tap/edit works everywhere; only actually moves
+  // the node when in edit mode (canMove).
+  const startDrag = (e, id) => {
+    // In connect/cable mode, let the tap handler pick nodes instead
+    if (mode === 'connect' || mode === 'cable') return;
     e.stopPropagation();
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     // If a second finger is already down, let the gesture handler take over
@@ -1916,9 +2061,38 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     const svg = svgRef.current;
     try { svg?.setPointerCapture?.(e.pointerId); } catch (err) {}
     const p = getPoint(e);
-    dragInfoRef.current = { id, offsetX: p.x - lNodes[id].x, offsetY: p.y - lNodes[id].y, pointerId: e.pointerId };
+    dragInfoRef.current = { id, offsetX: p.x - lNodes[id].x, offsetY: p.y - lNodes[id].y, startX: p.x, startY: p.y, pointerId: e.pointerId, canMove: mode === 'edit' };
     movedRef.current = false;
     setDragging(id);
+  };
+
+  // Drag a waypoint (bend point) on a segment
+  const startWaypointDrag = (e, segId, wi) => {
+    if (mode !== 'edit') return;
+    e.stopPropagation();
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size >= 2) return;
+    const svg = svgRef.current;
+    try { svg?.setPointerCapture?.(e.pointerId); } catch (err) {}
+    const p = getPoint(e);
+    const wp = lSegs[segId]?.waypoints?.[wi];
+    if (!wp) return;
+    dragInfoRef.current = { kind: 'waypoint', segId, wi, offsetX: p.x - wp.x, offsetY: p.y - wp.y, startX: p.x, startY: p.y, pointerId: e.pointerId };
+    movedRef.current = false;
+    setDragging(`${segId}:wp${wi}`);
+  };
+
+  // Drag the rotation handle on a T-piece / corner to rotate freely 0–360°
+  const startRotateDrag = (e, id) => {
+    if (mode !== 'edit') return;
+    e.stopPropagation();
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size >= 2) return;
+    const svg = svgRef.current;
+    try { svg?.setPointerCapture?.(e.pointerId); } catch (err) {}
+    dragInfoRef.current = { kind: 'rotate', id, pointerId: e.pointerId };
+    movedRef.current = false;
+    setDragging(`${id}:rot`);
   };
   // These are attached to the SVG root, so they fire no matter where the pointer is
   const onCanvasPointerMove = (e) => {
@@ -1969,9 +2143,37 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     const di = dragInfoRef.current;
     if (di) {
       const p = getPoint(e);
+      if (di.kind === 'rotate') {
+        const node = lNodes[di.id];
+        if (!node) return;
+        const ang = Math.atan2(p.y - node.y, p.x - node.x) * 180 / Math.PI;
+        const deg = Math.round((ang + 90 + 360) % 360);
+        setLNodes(prev => ({ ...prev, [di.id]: { ...prev[di.id], rotation: deg } }));
+        movedRef.current = true;
+        return;
+      }
+      // Ignore sub-threshold jitter so a click isn't mistaken for a drag
+      if (!movedRef.current && di.startX !== undefined) {
+        const moveDist = Math.hypot(p.x - di.startX, p.y - di.startY);
+        if (moveDist < 3) return;
+      }
+      if (di.kind === 'waypoint') {
+        const nx = Math.round(p.x - di.offsetX);
+        const ny = Math.round(p.y - di.offsetY);
+        setLSegs(prev => {
+          const seg = prev[di.segId];
+          if (!seg || !seg.waypoints) return prev;
+          const wps = seg.waypoints.map((w, i) => i === di.wi ? { x: nx, y: ny } : w);
+          return { ...prev, [di.segId]: { ...seg, waypoints: wps } };
+        });
+        movedRef.current = true;
+        return;
+      }
       const nx = Math.round(p.x - di.offsetX);
       const ny = Math.round(p.y - di.offsetY);
-      setLNodes(prev => ({ ...prev, [di.id]: { ...prev[di.id], x: nx, y: ny } }));
+      if (di.canMove) {
+        setLNodes(prev => ({ ...prev, [di.id]: { ...prev[di.id], x: nx, y: ny } }));
+      }
       movedRef.current = true;
       return;
     }
@@ -2018,6 +2220,37 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     const pi = panInfoRef.current;
     if (di) {
       try { svg?.releasePointerCapture?.(e.pointerId); } catch (err) {}
+      // If a waypoint was dragged, update the segment's stored length to the chain length
+      if (di.kind === 'waypoint') {
+        if (movedRef.current) {
+          setLSegs(prev => {
+            const seg = prev[di.segId];
+            if (!seg) return prev;
+            const a = lNodes[seg.from], b = lNodes[seg.to];
+            if (!a || !b) return prev;
+            const chain = [a, ...(seg.waypoints || []), b];
+            let px = 0;
+            for (let i = 0; i < chain.length - 1; i++) px += Math.hypot(chain[i+1].x - chain[i].x, chain[i+1].y - chain[i].y);
+            return { ...prev, [di.segId]: { ...seg, length_m: Math.round(px / PX_PER_M * 10) / 10 } };
+          });
+        }
+      } else if (!movedRef.current) {
+        // A tap (no drag) on a node — detect double-tap to open editor (any mode)
+        const now = Date.now();
+        if (nodeTapRef.current.id === di.id && now - nodeTapRef.current.t < 400) {
+          nodeTapRef.current = { id: null, t: 0 };
+          // If this node is part of a multi-selection, edit all of them together
+          if (selectedNodes.length > 1 && selectedNodes.includes(di.id)) {
+            setMultiEdit({ kind: lNodes[selectedNodes[0]]?.kind || 'junction' });
+          } else {
+            setEditNode(di.id);
+          }
+        } else {
+          nodeTapRef.current = { id: di.id, t: now };
+          // Single tap in edit mode also toggles multi-select membership
+          if (mode === 'edit') toggleSelectNode(di.id);
+        }
+      }
       dragInfoRef.current = null;
       setDragging(null);
       if (movedRef.current) lastTapRef.current = Date.now();
@@ -2053,7 +2286,11 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const deleteCable = (cid) => { setLCables(lCables.filter(c => c.id !== cid)); setEditCable(null); };
   const updateCable = (cid, data) => { setLCables(lCables.map(c => c.id === cid ? { ...c, ...data } : c)); };
 
-  const save = () => { setNodes(lNodes); setSegments(lSegs); setCables(lCables); setBgImage(lBg); close(); };
+  const save = () => {
+    setNodes(lNodes); setSegments(lSegs); setCables(lCables);
+    setBgImage(lBg ? { ...lBg, locked: bgLocked } : null);
+    close();
+  };
 
   // ---- Background image (PDF / image) handling ----
   const loadPdfJs = () => new Promise((resolve, reject) => {
@@ -2144,6 +2381,37 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   };
 
   // Compute content bounds (for initial fit and Fit button)
+  // Connection anchor on a node: for T-pieces and corners, return the arm-end
+  // facing `toward`; for dots/boards/loads, return the centre.
+  const nodeAnchor = (node, toward) => {
+    const kind = node.kind || 'junction';
+    if (kind !== 'junction') return { x: node.x, y: node.y };
+    const shape = node.shape || 'dot';
+    if (shape === 'dot') return { x: node.x, y: node.y };
+    const sz = node.size || 14;
+    const rot = ((node.rotation || 0) * Math.PI) / 180;
+    // arm-end unit directions in local (unrotated) space
+    let arms;
+    if (shape === 'tee') {
+      arms = [ {x:-1,y:0}, {x:1,y:0}, {x:0,y:1} ];   // left, right, down
+    } else { // corner
+      arms = [ {x:-1,y:0}, {x:0,y:1} ];               // left, down
+    }
+    // rotate arms and turn into absolute points
+    const pts = arms.map(d => {
+      const rx = d.x * Math.cos(rot) - d.y * Math.sin(rot);
+      const ry = d.x * Math.sin(rot) + d.y * Math.cos(rot);
+      return { x: node.x + rx * sz, y: node.y + ry * sz };
+    });
+    // pick the arm-end nearest to the toward point
+    let best = pts[0], bd = Infinity;
+    for (const p of pts) {
+      const d = (p.x - toward.x)**2 + (p.y - toward.y)**2;
+      if (d < bd) { bd = d; best = p; }
+    }
+    return best;
+  };
+
   const contentBounds = useMemo(() => {
     const ps = Object.values(lNodes);
     if (ps.length === 0) return { x:0, y:0, w:1000, h:700 };
@@ -2172,6 +2440,72 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       return { x: cx - nw / 2, y: cy - nh / 2, w: nw, h: nh };
     });
   };
+
+  // Apply two-point calibration: user clicked two points (pixelDist world-units apart)
+  // and tells us that distance is `meters` in reality. Rescale the background so the
+  // grid (PX_PER_M world-units = 1 m) matches that real distance.
+  const applyCalibration = (meters) => {
+    if (!calibDialog || !meters || meters <= 0) { setCalibDialog(null); setCalibPoints([]); return; }
+    const worldPerMeterNow = calibDialog.pixelDist / meters; // current world-units per real meter
+    const factor = PX_PER_M / worldPerMeterNow;              // we want PX_PER_M units = 1 m
+    if (lBg && calibPoints[0]) {
+      const anchor = calibPoints[0];
+      const newScale = (lBg.scale || 1) * factor;
+      const nx = anchor.x - (anchor.x - lBg.x) * factor;
+      const ny = anchor.y - (anchor.y - lBg.y) * factor;
+      setLBg({ ...lBg, scale: newScale, x: nx, y: ny });
+    }
+    setCalibDialog(null);
+    setCalibPoints([]);
+    setBgStatus(`Målestok kalibreret: ${meters} m sat. Grid = virkelige meter.`);
+  };
+
+  // Set scale by typed drawing ratio (e.g. 1:100). We need the print resolution to
+  // convert; we assume the rendered bg is at a known px-per-metre. Simpler model:
+  // at 1:R, one metre on paper = R metres real. We map so that the displayed bg matches
+  // grid using the image's pixel dimensions and an assumed source DPI of the original.
+  // Practical approach: ratio scales the bg so its pixels map to grid via a metre factor.
+  const applyRatio = (ratioR) => {
+    if (!lBg || !ratioR || ratioR <= 0) return;
+    // The PDF was rendered at scale 2. A4/A1 etc. unknown, so we use a sensible assumption:
+    // many CAD PDFs are exported so that 1 drawing unit ≈ defined by ratio. We store the
+    // ratio for display and let the user fine-tune with the scale slider / wheel.
+    setLBg({ ...lBg, scaleRatio: ratioR });
+    setBgStatus(`Målestoksforhold 1:${ratioR} gemt (vises som reference).`);
+  };
+
+  // Mouse-wheel zoom toward the cursor position (whole drawing scales together)
+  const onWheel = (e) => {
+    e.preventDefault();
+    const svg = svgRef.current;
+    if (!svg) return;
+    const r = svg.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return;
+    const cur = vboxRef.current || contentBounds;
+    const fracX = (e.clientX - r.left) / r.width;
+    const fracY = (e.clientY - r.top) / r.height;
+    const worldX = cur.x + fracX * cur.w;
+    const worldY = cur.y + fracY * cur.h;
+    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    let nw = cur.w / factor;
+    let nh = cur.h / factor;
+    nw = Math.max(50, Math.min(40000, nw));
+    nh = Math.max(50, Math.min(40000, nh));
+    const nx = worldX - fracX * nw;
+    const ny = worldY - fracY * nh;
+    setVbox({ x: nx, y: ny, w: nw, h: nh });
+  };
+  // Keep a ref to vbox so the wheel handler always sees the latest value
+  const vboxRef = useRef(null);
+  useEffect(() => { vboxRef.current = vbox || contentBounds; }, [vbox, contentBounds]);
+  // Bind wheel non-passively (React's onWheel is passive, so preventDefault is ignored)
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const handler = (e) => onWheel(e);
+    svg.addEventListener('wheel', handler, { passive: false });
+    return () => svg.removeEventListener('wheel', handler);
+  }, []);
 
   // Grid lines
   const gridLines = useMemo(() => {
@@ -2212,6 +2546,32 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const updateNode = (id, data) => { setLNodes({ ...lNodes, [id]: { ...lNodes[id], ...data } }); };
   const updateSeg = (id, data) => { setLSegs({ ...lSegs, [id]: { ...lSegs[id], ...data } }); setEditSeg(null); };
   const deleteSeg = (id) => { const sg = {...lSegs}; delete sg[id]; setLSegs(sg); setEditSeg(null); };
+  // Add a bend (waypoint) at the midpoint of the segment's current chain
+  const addWaypoint = (id) => {
+    const s = lSegs[id];
+    if (!s) return;
+    const a = lNodes[s.from], b = lNodes[s.to];
+    if (!a || !b) return;
+    const wps = s.waypoints || [];
+    // insert at the midpoint of the longest leg of the current chain
+    const chain = [a, ...wps, b];
+    let bestLeg = 0, bestLen = -1;
+    for (let i = 0; i < chain.length - 1; i++) {
+      const dx = chain[i+1].x - chain[i].x, dy = chain[i+1].y - chain[i].y;
+      const len = Math.hypot(dx, dy);
+      if (len > bestLen) { bestLen = len; bestLeg = i; }
+    }
+    const mid = { x: Math.round((chain[bestLeg].x + chain[bestLeg+1].x)/2), y: Math.round((chain[bestLeg].y + chain[bestLeg+1].y)/2) };
+    const newWps = [...wps];
+    newWps.splice(bestLeg, 0, mid);  // insert in correct order along the chain
+    setLSegs({ ...lSegs, [id]: { ...s, waypoints: newWps } });
+    setEditSeg(id);  // keep selected so the handle shows
+  };
+  const removeWaypoint = (id) => {
+    const s = lSegs[id];
+    if (!s || !s.waypoints || s.waypoints.length === 0) return;
+    setLSegs({ ...lSegs, [id]: { ...s, waypoints: s.waypoints.slice(0, -1) } });
+  };
 
   // Renumber all segments WC001, WC002, ... in tray order
   const renumber = () => {
@@ -2234,7 +2594,17 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       <header className="bg-gradient-to-r from-blue-900 to-blue-700 text-white p-3 flex items-center justify-between shadow">
         <button onClick={cancel} className="px-3 py-1 rounded active:bg-blue-800"><X size={20}/></button>
         <h2 className="font-bold flex items-center gap-2"><Pencil size={18}/> Tegn anlæg</h2>
-        <button onClick={save} className="bg-white text-blue-900 px-3 py-1.5 rounded-lg font-semibold text-sm flex items-center gap-1"><Save size={14}/> Gem</button>
+        <div className="flex items-center gap-1">
+          <button onClick={undo} disabled={!canUndo}
+                  className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${canUndo ? 'bg-blue-800/60 active:bg-blue-800' : 'bg-blue-800/20 text-blue-300'}`}
+                  title="Fortryd sidste ændring">
+            <RefreshCw size={14} style={{ transform:'scaleX(-1)' }}/> Fortryd
+          </button>
+          <button onClick={()=>setHideChrome(h=>!h)} className="px-2 py-1.5 rounded text-xs bg-blue-800/60 active:bg-blue-800 flex items-center gap-1" title="Skjul/vis paneler for mere plads">
+            {hideChrome ? <ChevronRight size={14}/> : <X size={14}/>} {hideChrome ? 'Vis' : 'Skjul'}
+          </button>
+          <button onClick={save} className="bg-white text-blue-900 px-3 py-1.5 rounded-lg font-semibold text-sm flex items-center gap-1"><Save size={14}/> Gem</button>
+        </div>
       </header>
 
       {/* Toolbar */}
@@ -2256,20 +2626,43 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         </div>
       </div>
 
-      {/* Dedicated, always-visible background (tegningsgrundlag) bar */}
-      <div className="bg-emerald-50 border-b border-emerald-100 px-3 py-2">
+      {/* Junction shape picker — appears when Knude mode is active */}
+      {mode === 'junction' && !hideChrome && (
+        <div className="bg-blue-100/70 border-b border-blue-200 px-3 py-2 flex items-center gap-2 flex-wrap">
+          <span className="text-xs font-semibold text-blue-900 shrink-0">Vælg form:</span>
+          {[
+            ['dot', 'Punkt', <svg key="d" width="22" height="22" viewBox="0 0 22 22"><circle cx="11" cy="11" r="6" fill="#fff" stroke="#1565C0" strokeWidth="2"/></svg>],
+            ['tee', 'T-stykke', <svg key="t" width="22" height="22" viewBox="0 0 22 22"><line x1="3" y1="8" x2="19" y2="8" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round"/><line x1="11" y1="8" x2="11" y2="19" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round"/><circle cx="3" cy="8" r="2" fill="#1565C0"/><circle cx="19" cy="8" r="2" fill="#1565C0"/><circle cx="11" cy="19" r="2" fill="#1565C0"/></svg>],
+            ['corner', 'Hjørne', <svg key="c" width="22" height="22" viewBox="0 0 22 22"><polyline points="5,4 5,15 16,15" fill="none" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/><circle cx="5" cy="4" r="2" fill="#1565C0"/><circle cx="16" cy="15" r="2" fill="#1565C0"/></svg>],
+          ].map(([k, label, icon]) => (
+            <button key={k} onClick={()=>setJunctionShape(k)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border-2 ${junctionShape===k ? 'border-blue-600 bg-white' : 'border-transparent bg-white/60'}`}>
+              {icon} {label}
+            </button>
+          ))}
+          <label className="text-xs text-blue-900 flex items-center gap-1 ml-auto shrink-0">
+            Størrelse
+            <input type="range" min="6" max="40" value={junctionSize} onChange={e=>setJunctionSize(Number(e.target.value))} className="w-20"/>
+            <span className="w-7">{junctionSize}</span>
+          </label>
+        </div>
+      )}
+
+      {/* Dedicated background (tegningsgrundlag) bar — compact when active */}
+      {!hideChrome && (
+      <div className="bg-emerald-50 border-b border-emerald-100 px-3 py-1.5">
         <div className="flex items-center gap-2">
-          <FileText size={15} className="text-emerald-700 shrink-0"/>
+          <FileText size={14} className="text-emerald-700 shrink-0"/>
           {lBg ? (
             <>
               <span className="text-xs text-emerald-900 truncate flex-1">{lBg.name || 'Tegningsgrundlag aktivt'}</span>
-              <button onClick={()=>setBgPanel(p=>!p)} className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded-lg font-semibold shrink-0">Juster</button>
-              <button onClick={removeBg} className="text-xs px-2 py-1.5 bg-white text-red-600 border border-red-200 rounded-lg shrink-0 flex items-center gap-1"><Trash2 size={12}/></button>
+              <button onClick={()=>setBgPanel(p=>!p)} className="text-xs px-3 py-1 bg-emerald-600 text-white rounded-lg font-semibold shrink-0">{bgPanel ? 'Skjul' : 'Juster'}</button>
+              <button onClick={removeBg} className="text-xs px-2 py-1 bg-white text-red-600 border border-red-200 rounded-lg shrink-0 flex items-center gap-1"><Trash2 size={12}/></button>
             </>
           ) : (
             <>
               <span className="text-xs text-emerald-900 flex-1">Tilføj plantegning som baggrund (PDF eller billede)</span>
-              <label className="text-xs px-3 py-1.5 bg-emerald-600 text-white rounded-lg font-semibold shrink-0 cursor-pointer inline-flex items-center gap-1">
+              <label className="text-xs px-3 py-1 bg-emerald-600 text-white rounded-lg font-semibold shrink-0 cursor-pointer inline-flex items-center gap-1">
                 <Upload size={13}/> Vælg fil
                 <input type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/*" onChange={onBgFile} style={{ position:'absolute', left:'-9999px', width:1, height:1 }}/>
               </label>
@@ -2278,24 +2671,22 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         </div>
         {!lBg && (
           <p className="text-[11px] text-emerald-700/80 mt-1">
-            Virker ikke i preview? Fil-upload kræver den installerede (Vercel) version — preview-vinduet i appen blokerer filadgang.
+            Virker ikke i preview? Fil-upload kræver den installerede (Vercel) version — preview-vinduet blokerer filadgang.
           </p>
         )}
       </div>
+      )}
 
-      {(bgBusy || bgStatus) && (
+      {bgBusy && (
         <div className="bg-emerald-50 text-emerald-900 text-xs text-center py-1.5 px-2 flex items-center justify-center gap-2">
-          {bgBusy && <RefreshCw size={12} className="animate-spin"/>}
+          <RefreshCw size={12} className="animate-spin"/>
           <span>{bgStatus || 'Indlæser tegningsgrundlag …'}</span>
-          {!bgBusy && bgStatus && (
-            <button onClick={()=>setBgStatus(null)} className="ml-1 text-emerald-700 underline">skjul</button>
-          )}
         </div>
       )}
 
       {/* Background adjust panel */}
       {bgPanel && lBg && (
-        <div className="bg-white border-b shadow-sm px-3 py-2 space-y-2">
+        <div className="bg-white border-b shadow-sm px-3 py-2 space-y-2 max-h-[55vh] overflow-y-auto">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-stone-700 truncate flex items-center gap-1"><FileText size={12}/> {lBg.name || 'Tegningsgrundlag'}</span>
             <div className="flex gap-1">
@@ -2307,9 +2698,35 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
               <button onClick={()=>setBgPanel(false)} className="text-xs px-2 py-1 bg-stone-100 rounded">Luk</button>
             </div>
           </div>
-          <label className="block text-xs text-stone-600">Skalering: {Math.round((lBg.scale||1)*100)}%
+
+          {/* Lock toggle */}
+          <button onClick={()=>setBgLocked(l=>!l)}
+                  className={`w-full text-xs py-2 rounded-lg font-semibold flex items-center justify-center gap-1.5 ${bgLocked ? 'bg-blue-900 text-white' : 'bg-stone-100 text-stone-700 border border-stone-300'}`}>
+            {bgLocked ? '🔒 Tegning låst — knuder følger tegningen' : '🔓 Lås tegning (så knuder ikke forskydes)'}
+          </button>
+
+          {/* Calibration */}
+          <div className="border border-blue-100 rounded-lg p-2 bg-blue-50/40 space-y-1.5">
+            <div className="text-xs font-semibold text-blue-900">Målestok</div>
+            <button onClick={()=>{ setCalibrating(true); setCalibPoints([]); setBgPanel(false); setBgStatus('Tap to punkter på tegningen med kendt afstand …'); }}
+                    disabled={bgLocked}
+                    className={`w-full text-xs py-2 rounded-lg font-semibold flex items-center justify-center gap-1 ${bgLocked ? 'bg-stone-100 text-stone-400' : 'bg-blue-600 text-white'}`}>
+              <MousePointer2 size={13}/> Kalibrér: klik to punkter med kendt afstand
+            </button>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-stone-600 shrink-0">eller 1:</span>
+              <input type="number" placeholder="100" defaultValue={lBg.scaleRatio || ''}
+                     onBlur={e=> e.target.value && applyRatio(Number(e.target.value))}
+                     disabled={bgLocked}
+                     className="flex-1 border border-stone-300 rounded px-2 py-1 text-sm disabled:bg-stone-100"/>
+              <span className="text-xs text-stone-500 shrink-0">{lBg.scaleRatio ? `(1:${lBg.scaleRatio})` : ''}</span>
+            </div>
+          </div>
+
+          <label className={`block text-xs ${bgLocked ? 'text-stone-300' : 'text-stone-600'}`}>Skalering: {Math.round((lBg.scale||1)*100)}%
             <input type="range" min="10" max="400" value={(lBg.scale||1)*100}
                    onChange={e=>updateBg({ scale: Number(e.target.value)/100 })}
+                   disabled={bgLocked}
                    className="w-full"/>
           </label>
           <label className="block text-xs text-stone-600">Gennemsigtighed: {Math.round((lBg.opacity ?? 0.5)*100)}%
@@ -2318,41 +2735,57 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
                    className="w-full"/>
           </label>
           <div className="grid grid-cols-2 gap-2">
-            <label className="text-xs text-stone-600">X-position
+            <label className={`text-xs ${bgLocked ? 'text-stone-300' : 'text-stone-600'}`}>X-position
               <input type="number" value={Math.round(lBg.x)} onChange={e=>updateBg({ x: Number(e.target.value) })}
-                     className="w-full border border-stone-300 rounded px-2 py-1 text-sm"/>
+                     disabled={bgLocked}
+                     className="w-full border border-stone-300 rounded px-2 py-1 text-sm disabled:bg-stone-100"/>
             </label>
-            <label className="text-xs text-stone-600">Y-position
+            <label className={`text-xs ${bgLocked ? 'text-stone-300' : 'text-stone-600'}`}>Y-position
               <input type="number" value={Math.round(lBg.y)} onChange={e=>updateBg({ y: Number(e.target.value) })}
-                     className="w-full border border-stone-300 rounded px-2 py-1 text-sm"/>
+                     disabled={bgLocked}
+                     className="w-full border border-stone-300 rounded px-2 py-1 text-sm disabled:bg-stone-100"/>
             </label>
           </div>
-          <p className="text-[11px] text-stone-400">Tip: Juster skalering så et kendt mål på tegningen passer med grid (1 felt = 1 m).</p>
+          <p className="text-[11px] text-stone-400">Tip: Brug musens scrollhjul til at zoome hele tegningen. Kalibrér målestok ved at klikke to punkter med kendt afstand — så bliver længderne på dine føringsveje korrekte.</p>
         </div>
       )}
 
       {/* Help bar */}
+      {!hideChrome && (
       <div className="bg-blue-50 text-blue-900 text-xs text-center py-1.5 px-2">
-        {mode === 'junction' && '→ Tap tomt sted for at placere et knudepunkt (N1, N2, …)'}
-        {mode === 'board' && '→ Tap tomt sted for at placere en tavle (Q1, Q2, …)'}
-        {mode === 'load' && '→ Tap tomt sted for at placere en belastning (X1, X2, …)'}
+        {mode === 'junction' && `→ Tap for at placere ${junctionShape==='tee'?'et T-stykke':junctionShape==='corner'?'et hjørne':'et punkt'} · dobbeltklik for at redigere`}
+        {mode === 'board' && '→ Tap for at placere en tavle (Q1, Q2, …) · dobbeltklik for at redigere'}
+        {mode === 'load' && '→ Tap for at placere en belastning (X1, X2, …) · dobbeltklik for at redigere'}
         {mode === 'connect' && (connectFrom ? `→ Tap en anden knude for at forbinde til ${connectFrom}` : '→ Tap første knude/tavle/last')}
         {mode === 'cable' && (cableMsg
           ? `⚠ ${cableMsg}`
           : (cableFrom
               ? `→ Tap mål-tavle eller last · ruten findes automatisk fra ${cableFrom}`
               : '→ Tap kablets start-tavle (kabler går fra tavle til last/tavle)'))}
-        {mode === 'edit' && '→ Tap element for at redigere · Hold og træk knude for at flytte den'}
         {mode === 'pan' && '→ Træk i baggrunden for at flytte hele lærredet · Fit nulstiller'}
-        <span className="block text-blue-700 opacity-75 mt-0.5">✌️ To fingre: knib for at zoome · træk for at flytte (alle modes)</span>
+        <span className="block text-blue-700 opacity-75 mt-0.5">✌️ Dobbeltklik for at redigere · træk for at flytte · to fingre for at zoome/panne</span>
       </div>
+      )}
+
+      {/* Multi-select action bar (edit mode) */}
+      {mode === 'edit' && selectedNodes.length > 0 && (
+        <div className="bg-blue-900 text-white px-3 py-2 flex items-center gap-2 text-sm">
+          <span className="font-semibold">{selectedNodes.length} valgt</span>
+          <span className="text-blue-200 text-xs">
+            ({(lNodes[selectedNodes[0]]?.kind || 'junction') === 'board' ? 'tavler' : (lNodes[selectedNodes[0]]?.kind || 'junction') === 'load' ? 'laster' : 'punkter'})
+          </span>
+          <button onClick={()=>setMultiEdit({ kind: lNodes[selectedNodes[0]]?.kind || 'junction' })}
+                  className="ml-auto bg-white text-blue-900 px-3 py-1.5 rounded-lg font-semibold text-xs">Rediger alle</button>
+          <button onClick={clearSelection} className="bg-blue-800 px-2 py-1.5 rounded-lg text-xs">Ryd</button>
+        </div>
+      )}
 
       {/* Canvas */}
       <div className="flex-1 overflow-hidden bg-stone-50 relative">
         <svg ref={svgRef}
              viewBox={`${bounds.x} ${bounds.y} ${bounds.w} ${bounds.h}`}
              className="w-full h-full"
-             style={{ cursor: mode==='pan' ? 'grab' : (mode==='edit' ? 'default' : 'crosshair'), touchAction:'none' }}
+             style={{ cursor: mode==='pan' ? 'grab' : 'crosshair', touchAction:'none' }}
              onClick={onCanvasTap}
              onPointerDown={onCanvasPointerDown}
              onPointerMove={onCanvasPointerMove}
@@ -2374,23 +2807,60 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
                   strokeDasharray={(l.key.startsWith('v') ? (l.x1 % (5*PX_PER_M*GRID_M) === 0) : (l.y1 % (5*PX_PER_M*GRID_M) === 0)) ? '0' : '2,2'}/>
           ))}
 
-          {/* Segments */}
+          {/* Segments — drawn as polylines through optional waypoints (bends) */}
           {Object.entries(lSegs).map(([id, s]) => {
-            const a = lNodes[s.from], b = lNodes[s.to];
-            if (!a || !b) return null;
-            const isSel = editSeg === id;
+            const aN = lNodes[s.from], bN = lNodes[s.to];
+            if (!aN || !bN) return null;
+            const isSel = selectedSeg === id || editSeg === id;
+            const wps = s.waypoints || [];
+            // Anchor connection to the nearest arm-end of T/corner nodes (not centre)
+            const aTarget = wps[0] || bN;
+            const bTarget = wps.length ? wps[wps.length-1] : aN;
+            const a = nodeAnchor(aN, aTarget);
+            const b = nodeAnchor(bN, bTarget);
+            // full point chain: from → waypoints → to
+            const chain = [a, ...wps, b];
+            const ptsStr = chain.map(p => `${p.x},${p.y}`).join(' ');
+            // geometric length along the chain, in metres
+            let chainPx = 0;
+            for (let i = 0; i < chain.length - 1; i++) {
+              chainPx += Math.hypot(chain[i+1].x - chain[i].x, chain[i+1].y - chain[i].y);
+            }
+            const chainM = Math.round(chainPx / PX_PER_M * 10) / 10;
+            // midpoint of the whole chain for the label (use middle vertex area)
+            const midIdx = Math.floor(chain.length / 2);
+            const mid = chain.length % 2 === 0
+              ? { x: (chain[midIdx-1].x + chain[midIdx].x)/2, y: (chain[midIdx-1].y + chain[midIdx].y)/2 }
+              : chain[midIdx];
+            // Tray width drives both the line thickness and its colour
+            const trayW = trayTypes[s.tray_type]?.width_mm;
+            const autoColor = trayWidthColor(trayW);
+            const autoStroke = trayWidthStroke(trayW);
+            // A manually chosen colour overrides the width-based colour
+            const segStroke = isSel ? '#a04500' : (s.color || autoColor);
+            const segWidth = isSel ? autoStroke + 2 : autoStroke;
+            const dash = s.lineStyle === 'dashed' ? '10,6' : s.lineStyle === 'dotted' ? '2,5' : undefined;
             return (
-              <g key={id} onClick={(e)=>onSegTap(e, id)} style={{ cursor:'pointer' }}>
-                <line x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-                      stroke={isSel?'#a04500':'#1f6feb'} strokeWidth={isSel?7:5} strokeLinecap="round"/>
-                <line x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-                      stroke="transparent" strokeWidth="20"/>
-                <text x={(a.x+b.x)/2} y={(a.y+b.y)/2 - 8} textAnchor="middle"
+              <g key={id} onClick={(e)=>onSegTap(e, id)} onDoubleClick={(e)=>onSegDouble(e, id)} style={{ cursor:'pointer' }}>
+                <polyline points={ptsStr} fill="none"
+                          stroke={segStroke} strokeWidth={segWidth} strokeLinecap="round" strokeLinejoin="round"
+                          strokeDasharray={dash}/>
+                <polyline points={ptsStr} fill="none"
+                          stroke="transparent" strokeWidth={Math.max(20, segWidth + 12)}/>
+                {/* Waypoint handles — draggable when the segment is selected */}
+                {isSel && wps.map((wp, wi) => (
+                  <circle key={`wp${wi}`} cx={wp.x} cy={wp.y} r="7"
+                          fill="#fff" stroke="#a04500" strokeWidth="2.5"
+                          style={{ cursor:'move', touchAction:'none' }}
+                          onPointerDown={(e)=>startWaypointDrag(e, id, wi)}
+                          onClick={(e)=>e.stopPropagation()}/>
+                ))}
+                <text x={mid.x} y={mid.y - 8} textAnchor="middle"
                       fontSize="11" fontWeight="bold" fill="#0B3D91"
                       style={{ pointerEvents:'none' }}>{id}</text>
-                <text x={(a.x+b.x)/2} y={(a.y+b.y)/2 + 12} textAnchor="middle"
+                <text x={mid.x} y={mid.y + 12} textAnchor="middle"
                       fontSize="10" fill="#666" style={{ pointerEvents:'none' }}>
-                  {s.length_m}m · {s.tray_type}
+                  {wps.length > 0 ? `${chainM}m` : `${s.length_m}m`} · {s.tray_type}
                 </text>
               </g>
             );
@@ -2398,6 +2868,18 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
 
           {/* Cables are registered in the data model but not drawn on the canvas —
               they run inside the tray segments. Edit them via the Cables tab. */}
+
+          {/* Calibration points and line */}
+          {calibPoints.map((pt, i) => (
+            <g key={`calib${i}`}>
+              <circle cx={pt.x} cy={pt.y} r="6" fill="#2563eb" stroke="#fff" strokeWidth="2" style={{ pointerEvents:'none' }}/>
+              <text x={pt.x} y={pt.y - 10} textAnchor="middle" fontSize="11" fontWeight="bold" fill="#2563eb" style={{ pointerEvents:'none' }}>{i+1}</text>
+            </g>
+          ))}
+          {calibPoints.length === 2 && (
+            <line x1={calibPoints[0].x} y1={calibPoints[0].y} x2={calibPoints[1].x} y2={calibPoints[1].y}
+                  stroke="#2563eb" strokeWidth="2" strokeDasharray="4,3" style={{ pointerEvents:'none' }}/>
+          )}
 
           {/* Preview line during connect */}
           {connectFrom && lNodes[connectFrom] && (
@@ -2409,7 +2891,8 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
           {/* Nodes */}
           {Object.entries(lNodes).map(([id, p]) => {
             const isFrom = connectFrom === id || cableFrom === id;
-            const isSel = editNode === id;
+            const isMultiSel = selectedNodes.includes(id);
+            const isSel = editNode === id || isMultiSel;
             const kind = p.kind || 'junction';
             // In cable mode, dim nodes that aren't valid targets
             let dim = false;
@@ -2417,34 +2900,105 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
               if (!cableFrom) dim = kind !== 'board';            // start: only boards
               else dim = kind === 'junction';                    // end: boards or loads, not junctions
             }
-            const stroke = isFrom ? '#a04500' : (isSel ? '#9C5700' : (kind==='board' ? '#0B3D91' : kind==='load' ? '#37474F' : '#1565C0'));
-            const fill = isFrom ? '#FFE0B2' : (isSel ? '#FFF3CD' : (kind==='board' ? '#E3F2FD' : kind==='load' ? '#ECEFF1' : '#fff'));
+            // For junctions (point/T/corner): colour follows tray width (like segments),
+            // unless a manual colour is set. Boards/loads keep their default colour.
+            let defStroke;
+            if (kind === 'junction') {
+              const jw = trayTypes[p.tray_type]?.width_mm;
+              defStroke = jw ? trayWidthColor(jw) : '#1565C0';
+            } else {
+              defStroke = kind==='board' ? '#0B3D91' : '#37474F';
+            }
+            const stroke = isFrom ? '#a04500' : (isSel ? '#9C5700' : (p.color || defStroke));
+            const fill = isFrom ? '#FFE0B2' : (isSel ? '#FFF3CD' : (p.color ? lightenColor(p.color) : (kind==='board' ? '#E3F2FD' : kind==='load' ? '#ECEFF1' : (kind==='junction' && p.tray_type ? lightenColor(defStroke) : '#fff'))));
             const common = {
               onClick:(e)=>onNodeTap(e, id),
+              onDoubleClick:(e)=>onNodeDouble(e, id),
               onPointerDown:(e)=>startDrag(e, id),
               style:{ cursor: mode==='edit' ? 'move' : 'pointer', touchAction:'none', opacity: dim ? 0.35 : 1 },
             };
             if (kind === 'board') {
+              const bw = (p.size || 14) * 1.85, bh = (p.size || 14) * 1.07;
               return (
                 <g key={id} {...common}>
-                  <rect x={p.x-26} y={p.y-15} width="52" height="30" rx="3" fill={fill} stroke={stroke} strokeWidth="2.5"/>
+                  <rect x={p.x-bw} y={p.y-bh} width={bw*2} height={bh*2} rx="3" fill={fill} stroke={stroke} strokeWidth="2.5"/>
                   <text x={p.x} y={p.y+1} textAnchor="middle" fontSize="11" fontWeight="bold" fill={stroke} style={{ pointerEvents:'none', userSelect:'none' }}>{id}</text>
-                  {p.In_main ? <text x={p.x} y={p.y+11} textAnchor="middle" fontSize="7" fill="#666" style={{ pointerEvents:'none' }}>{p.In_main}A</text> : null}
+                  {p.In_main ? <text x={p.x} y={p.y+bh*0.7} textAnchor="middle" fontSize="7" fill="#666" style={{ pointerEvents:'none' }}>{p.In_main}A</text> : null}
                 </g>
               );
             }
             if (kind === 'load') {
+              const ls = (p.size || 14) * 1.14;
               return (
                 <g key={id} {...common}>
-                  <polygon points={`${p.x},${p.y-16} ${p.x+16},${p.y+12} ${p.x-16},${p.y+12}`} fill={fill} stroke={stroke} strokeWidth="2.5" strokeLinejoin="round"/>
-                  <text x={p.x} y={p.y+8} textAnchor="middle" fontSize="10" fontWeight="bold" fill={stroke} style={{ pointerEvents:'none', userSelect:'none' }}>{id}</text>
+                  <polygon points={`${p.x},${p.y-ls} ${p.x+ls},${p.y+ls*0.75} ${p.x-ls},${p.y+ls*0.75}`} fill={fill} stroke={stroke} strokeWidth="2.5" strokeLinejoin="round"/>
+                  <text x={p.x} y={p.y+ls*0.5} textAnchor="middle" fontSize="10" fontWeight="bold" fill={stroke} style={{ pointerEvents:'none', userSelect:'none' }}>{id}</text>
+                </g>
+              );
+            }
+            // Junction: dot (circle), T-piece, or corner — unified design language
+            const jShape = p.shape || 'dot';
+            const jSize = p.size || 14;
+            const rot = p.rotation || 0;
+            const sw = Math.max(3, Math.round(jSize / 3.2));   // line thickness
+            const endR = Math.max(3, jSize / 3.2);             // end-cap radius
+            const isJSel = editNode === id || selectedNodes.includes(id);
+            // shared end-cap: white fill, coloured ring — matches the dot junction
+            const endCap = (cx, cy, key) => (
+              <circle key={key} cx={cx} cy={cy} r={endR} fill="#fff" stroke={stroke} strokeWidth="2"/>
+            );
+            if (jShape === 'tee') {
+              const arm = jSize;
+              const showRot = mode === 'edit' && isJSel;
+              return (
+                <g key={id}>
+                  <g {...common} transform={`rotate(${rot} ${p.x} ${p.y})`}>
+                    <circle cx={p.x} cy={p.y} r={jSize+8} fill="transparent"/>
+                    {isJSel && <circle cx={p.x} cy={p.y} r={jSize+5} fill="none" stroke="#9C5700" strokeWidth="1.5" strokeDasharray="3,2"/>}
+                    <line x1={p.x-arm} y1={p.y} x2={p.x+arm} y2={p.y} stroke={stroke} strokeWidth={sw} strokeLinecap="round"/>
+                    <line x1={p.x} y1={p.y} x2={p.x} y2={p.y+arm} stroke={stroke} strokeWidth={sw} strokeLinecap="round"/>
+                    {endCap(p.x-arm, p.y, 'l')}
+                    {endCap(p.x+arm, p.y, 'r')}
+                    {endCap(p.x, p.y+arm, 'b')}
+                    <text x={p.x} y={p.y-jSize*0.55} textAnchor="middle" fontSize="9" fontWeight="bold" fill={stroke} style={{ pointerEvents:'none', userSelect:'none' }} transform={`rotate(${-rot} ${p.x} ${p.y-jSize*0.55})`}>{id}</text>
+                  </g>
+                  {showRot && (
+                    <g style={{ cursor:'grab', touchAction:'none' }} onPointerDown={(e)=>startRotateDrag(e, id)}>
+                      <line x1={p.x} y1={p.y} x2={p.x} y2={p.y-jSize-18} stroke="#9C5700" strokeWidth="1.5" strokeDasharray="2,2"/>
+                      <circle cx={p.x} cy={p.y-jSize-18} r="6" fill="#9C5700" stroke="#fff" strokeWidth="2"/>
+                    </g>
+                  )}
+                </g>
+              );
+            }
+            if (jShape === 'corner') {
+              const arm = jSize;
+              const showRot = mode === 'edit' && isJSel;
+              return (
+                <g key={id}>
+                  <g {...common} transform={`rotate(${rot} ${p.x} ${p.y})`}>
+                    <circle cx={p.x} cy={p.y} r={jSize+8} fill="transparent"/>
+                    {isJSel && <circle cx={p.x} cy={p.y} r={jSize+5} fill="none" stroke="#9C5700" strokeWidth="1.5" strokeDasharray="3,2"/>}
+                    <polyline points={`${p.x-arm},${p.y} ${p.x},${p.y} ${p.x},${p.y+arm}`}
+                              fill="none" stroke={stroke} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round"/>
+                    {endCap(p.x-arm, p.y, 'l')}
+                    {endCap(p.x, p.y+arm, 'b')}
+                    <text x={p.x+jSize*0.4} y={p.y-jSize*0.4} textAnchor="start" fontSize="9" fontWeight="bold" fill={stroke} style={{ pointerEvents:'none', userSelect:'none' }} transform={`rotate(${-rot} ${p.x+jSize*0.4} ${p.y-jSize*0.4})`}>{id}</text>
+                  </g>
+                  {showRot && (
+                    <g style={{ cursor:'grab', touchAction:'none' }} onPointerDown={(e)=>startRotateDrag(e, id)}>
+                      <line x1={p.x} y1={p.y} x2={p.x} y2={p.y-jSize-18} stroke="#9C5700" strokeWidth="1.5" strokeDasharray="2,2"/>
+                      <circle cx={p.x} cy={p.y-jSize-18} r="6" fill="#9C5700" stroke="#fff" strokeWidth="2"/>
+                    </g>
+                  )}
                 </g>
               );
             }
             return (
               <g key={id} {...common}>
-                <circle cx={p.x} cy={p.y} r="14" fill={fill} stroke={stroke} strokeWidth="2.5"/>
-                <text x={p.x} y={p.y+4} textAnchor="middle" fontSize="10" fontWeight="bold" fill={stroke} style={{ pointerEvents:'none', userSelect:'none' }}>{id}</text>
+                {isJSel && <circle cx={p.x} cy={p.y} r={jSize+4} fill="none" stroke="#9C5700" strokeWidth="1.5" strokeDasharray="3,2"/>}
+                <circle cx={p.x} cy={p.y} r={jSize} fill={fill} stroke={stroke} strokeWidth="2.5"/>
+                <text x={p.x} y={p.y+4} textAnchor="middle" fontSize={Math.max(8, Math.min(jSize-4, 11))} fontWeight="bold" fill={stroke} style={{ pointerEvents:'none', userSelect:'none' }}>{id}</text>
               </g>
             );
           })}
@@ -2474,10 +3028,33 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
             </div>
             <div className="flex items-center gap-1.5">
               <svg width="20" height="14"><circle cx="10" cy="7" r="6" fill="#fff" stroke="#1565C0" strokeWidth="1.5"/></svg>
-              <span>Knude</span>
+              <span>Punkt</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <svg width="20" height="14"><line x1="3" y1="5" x2="17" y2="5" stroke="#1565C0" strokeWidth="2" strokeLinecap="round"/><line x1="10" y1="5" x2="10" y2="12" stroke="#1565C0" strokeWidth="2" strokeLinecap="round"/></svg>
+              <span>T-stykke</span>
             </div>
           </div>
         )}
+
+        {/* Tray-width colour legend — shows the widths actually in use */}
+        {(() => {
+          const widthsUsed = Array.from(new Set(
+            Object.values(lSegs).map(s => trayTypes[s.tray_type]?.width_mm).filter(Boolean)
+          )).sort((a,b)=>a-b);
+          if (widthsUsed.length === 0) return null;
+          return (
+            <div className="absolute bottom-2 right-2 bg-white/90 backdrop-blur rounded-lg shadow px-2 py-1.5 text-xs space-y-1 pointer-events-none">
+              <div className="font-semibold text-stone-600 mb-0.5">Bakkebredde</div>
+              {widthsUsed.map(w => (
+                <div key={w} className="flex items-center gap-1.5">
+                  <svg width="26" height="10"><line x1="2" y1="5" x2="24" y2="5" stroke={trayWidthColor(w)} strokeWidth={Math.min(8, trayWidthStroke(w))} strokeLinecap="round"/></svg>
+                  <span>{w} mm</span>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
       </div>
 
       {/* Status footer */}
@@ -2508,10 +3085,63 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       )}
 
       {/* Edit node dialog */}
-      {editNode && <NodeEditDialog id={editNode} setId={setEditNode} lNodes={lNodes} renameNode={renameNode} deleteNode={deleteNode} updateNode={updateNode} nodeConnCount={nodeConnCount} cableConnCount={cableConnCount}/>}
+      {editNode && <NodeEditDialog id={editNode} setId={setEditNode} lNodes={lNodes} renameNode={renameNode} deleteNode={deleteNode} updateNode={updateNode} nodeConnCount={nodeConnCount} cableConnCount={cableConnCount} trayTypes={trayTypes}/>}
+      {multiEdit && <MultiEditModal kind={multiEdit.kind} ids={selectedNodes} close={()=>setMultiEdit(null)}
+        applyToAll={(patch)=>{
+          setLNodes(prev => {
+            const next = { ...prev };
+            selectedNodes.forEach(nid => { if (next[nid]) next[nid] = { ...next[nid], ...patch }; });
+            return next;
+          });
+          setMultiEdit(null);
+        }}
+        deleteAll={()=>{
+          setLNodes(prev => {
+            const next = { ...prev };
+            selectedNodes.forEach(nid => delete next[nid]);
+            return next;
+          });
+          // also remove segments/cables touching deleted nodes
+          setLSegs(prev => {
+            const next = {};
+            Object.entries(prev).forEach(([sid, s]) => { if (!selectedNodes.includes(s.from) && !selectedNodes.includes(s.to)) next[sid] = s; });
+            return next;
+          });
+          setSelectedNodes([]); setMultiEdit(null);
+        }}
+      />}
 
       {/* Edit segment dialog */}
-      {editSeg && <SegEditDialog id={editSeg} setId={setEditSeg} lSegs={lSegs} trayTypes={trayTypes} updateSeg={updateSeg} deleteSeg={deleteSeg}/>}
+      {editSeg && <SegEditDialog id={editSeg} setId={setEditSeg} lSegs={lSegs} trayTypes={trayTypes} updateSeg={updateSeg} deleteSeg={deleteSeg} addWaypoint={addWaypoint} removeWaypoint={removeWaypoint}/>}
+
+      {/* Calibration in-progress banner */}
+      {calibrating && (
+        <div className="absolute top-0 left-0 right-0 bg-blue-600 text-white text-xs text-center py-2 px-3 z-20 flex items-center justify-center gap-2">
+          <MousePointer2 size={14}/>
+          {calibPoints.length === 0 ? 'Tap punkt 1 på tegningen' : 'Tap punkt 2 (kendt afstand fra punkt 1)'}
+          <button onClick={()=>{ setCalibrating(false); setCalibPoints([]); setBgStatus(null); }} className="ml-2 underline">Annuller</button>
+        </div>
+      )}
+
+      {/* Calibration distance dialog */}
+      {calibDialog && (
+        <div className="absolute inset-0 bg-black/50 z-20 flex items-end lg:items-center justify-center p-4">
+          <div className="bg-white p-4 rounded-2xl w-full lg:max-w-sm">
+            <h3 className="font-bold mb-2 text-blue-900 flex items-center gap-2"><MousePointer2 size={18}/> Kalibrér målestok</h3>
+            <p className="text-xs text-stone-500 mb-3">Hvor lang er afstanden mellem de to punkter i virkeligheden?</p>
+            <div className="flex items-center gap-2">
+              <input id="calib-input" type="number" step="0.1" autoFocus placeholder="fx 5"
+                     className="flex-1 border border-stone-300 rounded-lg px-3 py-2 text-lg"
+                     onKeyDown={e=>{ if(e.key==='Enter'){ applyCalibration(Number(e.target.value)); } }}/>
+              <span className="text-stone-600 font-semibold">meter</span>
+            </div>
+            <div className="flex gap-2 mt-4">
+              <button onClick={()=>{ setCalibDialog(null); setCalibPoints([]); }} className="flex-1 py-3 border border-stone-300 rounded-lg font-semibold">Annuller</button>
+              <button onClick={()=>{ const el=document.getElementById('calib-input'); applyCalibration(Number(el?.value)); }} className="flex-[2] py-3 bg-blue-600 text-white rounded-lg font-semibold">Sæt målestok</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Pending cable dialog */}
       {pendingCable && (
@@ -2591,7 +3221,7 @@ function ToolBtn({ active, onClick, icon: Icon, label }) {
   );
 }
 
-function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode, nodeConnCount, cableConnCount }) {
+function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode, nodeConnCount, cableConnCount, trayTypes }) {
   const node = lNodes[id];
   const [name, setName] = useState(id);
   const [kind, setKind] = useState(node.kind || 'junction');
@@ -2602,6 +3232,9 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
     function: node.function || 'Socket circuit',
     V: node.V ?? 230, phases: node.phases ?? 1,
     Ib: node.Ib ?? 0, In: node.In ?? 0, cos_phi: node.cos_phi ?? 0.9,
+    shape: node.shape || 'dot', size: node.size || 14, rotation: node.rotation || 0,
+    tray_type: node.tray_type || '',
+    color: node.color || '',
   });
   const setM = (k, v) => setMeta({ ...meta, [k]: v });
   const connCount = nodeConnCount(id);
@@ -2609,11 +3242,15 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
 
   const saveAll = () => {
     if (name !== id && lNodes[name]) { setNameErr(`${name} eksisterer allerede`); return; }
-    const update = { kind };
+    const update = { kind, color: meta.color || undefined, size: Number(meta.size) };
     if (kind === 'board') { update.board_type = meta.board_type; update.In_main = Number(meta.In_main); }
     else if (kind === 'load') {
       update.function = meta.function; update.V = Number(meta.V); update.phases = Number(meta.phases);
       update.Ib = Number(meta.Ib); update.In = Number(meta.In); update.cos_phi = Number(meta.cos_phi);
+    }
+    else if (kind === 'junction') {
+      update.shape = meta.shape; update.size = Number(meta.size); update.rotation = Number(meta.rotation);
+      update.tray_type = meta.tray_type || undefined;
     }
     updateNode(id, update);
     if (name !== id) renameNode(id, name);
@@ -2656,6 +3293,100 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
           </div>
         )}
 
+        {kind === 'junction' && (
+          <div className="border border-blue-100 rounded-lg p-2 mb-2 space-y-2 bg-blue-50/40">
+            <div>
+              <label className="block text-xs font-semibold text-stone-600 mb-1">Form</label>
+              <div className="flex gap-1">
+                {[['dot','Punkt'],['tee','T-stykke'],['corner','Hjørne']].map(([k,l]) => (
+                  <button key={k} onClick={()=>setM('shape', k)}
+                          className={`flex-1 py-2 rounded text-sm font-semibold ${meta.shape===k?'bg-blue-900 text-white':'bg-white border border-stone-300 text-stone-700'}`}>{l}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Tray size — determines the colour (like segments) */}
+            <div>
+              <label className="block text-xs font-semibold text-stone-600 mb-1">Bakkestørrelse (bestemmer farve)</label>
+              <select value={meta.tray_type} onChange={e=>setM('tray_type', e.target.value)}
+                      className="w-full border border-stone-300 rounded-lg px-2 py-2 text-sm">
+                <option value="">— ingen (standard blå) —</option>
+                {trayTypes && Object.keys(trayTypes).map(t => (
+                  <option key={t} value={t}>{t} ({trayTypes[t].width_mm} mm)</option>
+                ))}
+              </select>
+              {meta.tray_type && trayTypes[meta.tray_type] && (
+                <div className="flex items-center gap-2 mt-1 text-xs text-stone-600">
+                  <span>Bredde {trayTypes[meta.tray_type].width_mm} mm →</span>
+                  <span className="inline-block w-5 h-5 rounded-full border border-stone-300" style={{ background: trayWidthColor(trayTypes[meta.tray_type].width_mm) }}/>
+                  <span>auto-farve</span>
+                </div>
+              )}
+            </div>
+
+            {(meta.shape === 'tee' || meta.shape === 'corner') && (
+              <div>
+                <label className="block text-xs font-semibold text-stone-600 mb-1">Orientering</label>
+                <div className="flex items-center gap-3">
+                  {/* Live preview */}
+                  <svg width="56" height="56" viewBox="0 0 56 56" className="bg-white rounded border border-stone-200 shrink-0">
+                    <g transform={`rotate(${meta.rotation} 28 28)`}>
+                      {meta.shape === 'tee' ? (
+                        <>
+                          <line x1="10" y1="28" x2="46" y2="28" stroke="#1565C0" strokeWidth="4" strokeLinecap="round"/>
+                          <line x1="28" y1="28" x2="28" y2="46" stroke="#1565C0" strokeWidth="4" strokeLinecap="round"/>
+                          <circle cx="10" cy="28" r="4" fill="#fff" stroke="#1565C0" strokeWidth="2"/>
+                          <circle cx="46" cy="28" r="4" fill="#fff" stroke="#1565C0" strokeWidth="2"/>
+                          <circle cx="28" cy="46" r="4" fill="#fff" stroke="#1565C0" strokeWidth="2"/>
+                        </>
+                      ) : (
+                        <>
+                          <polyline points="10,28 28,28 28,46" fill="none" stroke="#1565C0" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round"/>
+                          <circle cx="10" cy="28" r="4" fill="#fff" stroke="#1565C0" strokeWidth="2"/>
+                          <circle cx="28" cy="46" r="4" fill="#fff" stroke="#1565C0" strokeWidth="2"/>
+                        </>
+                      )}
+                    </g>
+                  </svg>
+                  {/* Rotation buttons */}
+                  <div className="flex-1 grid grid-cols-4 gap-1">
+                    {[0, 90, 180, 270].map(deg => (
+                      <button key={deg} onClick={()=>setM('rotation', deg)}
+                              className={`py-2 rounded text-xs font-semibold ${meta.rotation===deg ? 'bg-blue-900 text-white' : 'bg-white border border-stone-300 text-stone-700'}`}>
+                        {deg}°
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <button onClick={()=>setM('rotation', (meta.rotation + 90) % 360)}
+                        className="w-full mt-1.5 py-1.5 bg-blue-100 text-blue-900 rounded text-xs font-semibold flex items-center justify-center gap-1">
+                  <RefreshCw size={12}/> Drej 90°
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Size — applies to all node kinds */}
+        <label className="block text-xs text-stone-600 mb-2">Størrelse: {meta.size}px
+          <input type="range" min="6" max="40" value={meta.size} onChange={e=>setM('size', Number(e.target.value))} className="w-full"/>
+        </label>
+
+        {/* Colour picker — applies to all node kinds */}
+        <div className="border border-stone-200 rounded-lg p-2 mb-2">
+          <label className="block text-xs font-semibold text-stone-600 mb-1">Farve</label>
+          <div className="flex items-center gap-2 flex-wrap">
+            {['', '#1565C0', '#2e7d32', '#c62828', '#f57c00', '#6a1b9a', '#00838f', '#37474F'].map(c => (
+              <button key={c||'def'} onClick={()=>setM('color', c)}
+                      title={c || 'Standard'}
+                      className={`w-7 h-7 rounded-full border-2 ${meta.color===c ? 'border-blue-900 ring-2 ring-blue-300' : 'border-stone-300'}`}
+                      style={{ background: c || 'repeating-linear-gradient(45deg,#fff,#fff 4px,#ddd 4px,#ddd 8px)' }}/>
+            ))}
+            <input type="color" value={meta.color || '#1565C0'} onChange={e=>setM('color', e.target.value)}
+                   className="w-7 h-7 rounded cursor-pointer border border-stone-300" title="Vælg egen farve"/>
+          </div>
+        </div>
+
         <p className="text-xs text-stone-500 mb-3">Forbundet til {connCount} føringsvej(e){cabCount>0?` og ${cabCount} kabel/kabler`:''}{(connCount>0||cabCount>0)?' — slettes med':''}.</p>
         <div className="flex gap-2">
           <button onClick={()=>deleteNode(id)} className="flex-1 py-3 bg-red-600 text-white rounded-lg font-semibold flex items-center justify-center gap-1 active:scale-95"><Trash2 size={14}/> Slet</button>
@@ -2666,21 +3397,173 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
   );
 }
 
-function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg }) {
+function MultiEditModal({ kind, ids, close, applyToAll, deleteAll }) {
+  const [color, setColor] = useState('');
+  const [size, setSize] = useState('');
+  const [shape, setShape] = useState('');
+  const [rotation, setRotation] = useState('');
+  const [func, setFunc] = useState('');
+  const label = kind === 'board' ? 'tavler' : kind === 'load' ? 'laster' : 'punkter';
+  const palette = ['', '#1565C0', '#2e7d32', '#c62828', '#f9a825', '#6a1b9a', '#00838f', '#37474F'];
+  const apply = () => {
+    const patch = {};
+    if (color !== '') patch.color = color || undefined;
+    if (size !== '') patch.size = Number(size);
+    if (kind === 'junction' && shape !== '') patch.shape = shape;
+    if (kind === 'junction' && rotation !== '') patch.rotation = Number(rotation);
+    if (kind === 'load' && func !== '') patch.function = func;
+    if (Object.keys(patch).length === 0) { close(); return; }
+    applyToAll(patch);
+  };
+  return (
+    <div className="absolute inset-0 bg-black/50 z-20 flex items-end lg:items-center justify-center p-4" onClick={close}>
+      <div className="bg-white p-4 rounded-2xl w-full lg:max-w-md max-h-[85vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+        <h3 className="font-bold mb-1 text-blue-900">Rediger {ids.length} {label}</h3>
+        <p className="text-xs text-stone-500 mb-3">Kun udfyldte felter ændres på alle valgte. Tomme felter lades urørt.</p>
+
+        {kind === 'junction' && (
+          <div className="mb-2">
+            <label className="block text-xs font-semibold text-stone-600 mb-1">Form (valgfri)</label>
+            <div className="flex gap-1">
+              {[['','—'],['dot','Punkt'],['tee','T-stykke'],['corner','Hjørne']].map(([k,l]) => (
+                <button key={k||'none'} onClick={()=>setShape(k)}
+                        className={`flex-1 py-2 rounded text-xs font-semibold ${shape===k?'bg-blue-900 text-white':'bg-white border border-stone-300 text-stone-700'}`}>{l}</button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {kind === 'load' && (
+          <div className="mb-2">
+            <label className="block text-xs font-semibold text-stone-600 mb-1">Funktion (valgfri)</label>
+            <select value={func} onChange={e=>setFunc(e.target.value)} className="w-full border border-stone-300 rounded-lg px-2 py-2 text-sm">
+              <option value="">— uændret —</option>
+              {FUNCTIONS.map(f => <option key={f} value={f}>{f}</option>)}
+            </select>
+          </div>
+        )}
+
+        <label className="block text-xs font-semibold text-stone-600 mb-1">Størrelse (valgfri)</label>
+        <div className="flex items-center gap-2 mb-3">
+          <input type="range" min="6" max="40" value={size || 14} onChange={e=>setSize(e.target.value)} className="flex-1"/>
+          <span className="text-sm w-16">{size === '' ? 'uændret' : `${size}px`}</span>
+          {size !== '' && <button onClick={()=>setSize('')} className="text-xs text-stone-400 underline">nulstil</button>}
+        </div>
+
+        {kind === 'junction' && (
+          <div className="mb-3">
+            <label className="block text-xs font-semibold text-stone-600 mb-1">Rotation (valgfri)</label>
+            <div className="grid grid-cols-5 gap-1">
+              <button onClick={()=>setRotation('')} className={`py-2 rounded text-xs font-semibold ${rotation===''?'bg-blue-900 text-white':'bg-white border border-stone-300'}`}>—</button>
+              {[0,90,180,270].map(d => (
+                <button key={d} onClick={()=>setRotation(String(d))} className={`py-2 rounded text-xs font-semibold ${rotation===String(d)?'bg-blue-900 text-white':'bg-white border border-stone-300'}`}>{d}°</button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <label className="block text-xs font-semibold text-stone-600 mb-1">Farve (valgfri)</label>
+        <div className="flex items-center gap-2 flex-wrap mb-4">
+          {palette.map(c => (
+            <button key={c||'def'} onClick={()=>setColor(c)} title={c || 'Standard'}
+                    className={`w-7 h-7 rounded-full border-2 ${color===c ? 'border-blue-900 ring-2 ring-blue-300' : 'border-stone-300'}`}
+                    style={{ background: c || 'repeating-linear-gradient(45deg,#fff,#fff 4px,#ddd 4px,#ddd 8px)' }}/>
+          ))}
+          <input type="color" value={color || '#1565C0'} onChange={e=>setColor(e.target.value)}
+                 className="w-7 h-7 rounded cursor-pointer border border-stone-300" title="Vælg egen farve"/>
+        </div>
+
+        <div className="flex gap-2">
+          <button onClick={deleteAll} className="flex-1 py-3 bg-red-600 text-white rounded-lg font-semibold flex items-center justify-center gap-1"><Trash2 size={14}/> Slet alle</button>
+          <button onClick={close} className="flex-1 py-3 border border-stone-300 rounded-lg font-semibold">Annuller</button>
+          <button onClick={apply} className="flex-[2] py-3 bg-blue-900 text-white rounded-lg font-semibold">Anvend på alle</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addWaypoint, removeWaypoint }) {
   const s = lSegs[id];
   const [length_m, setL] = useState(s.length_m);
   const [tray_type, setTT] = useState(s.tray_type);
+  const [color, setColor] = useState(s.color || '');
+  const [lineStyle, setLineStyle] = useState(s.lineStyle || 'solid');
+  const nWps = (s.waypoints || []).length;
   return (
     <div className="absolute inset-0 bg-black/50 z-10 flex items-end lg:items-center justify-center p-4" onClick={()=>setId(null)}>
-      <div className="bg-white p-4 rounded-2xl w-full lg:max-w-md" onClick={e=>e.stopPropagation()}>
+      <div className="bg-white p-4 rounded-2xl w-full lg:max-w-md max-h-[85vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
         <h3 className="font-bold mb-3 text-blue-900">Segment {id}</h3>
         <p className="text-xs text-stone-500 mb-3">{s.from} → {s.to}</p>
         <FormField label="Længde [m]" type="number" step="0.5" value={length_m} onChange={setL}/>
-        <Selector label="Tray type" value={tray_type} onChange={setTT} options={Object.keys(trayTypes)}/>
+        <Selector label="Tray type (bredde bestemmer farve & tykkelse)" value={tray_type} onChange={setTT} options={Object.keys(trayTypes)}/>
+
+        {/* Auto preview from tray width */}
+        {(() => {
+          const w = trayTypes[tray_type]?.width_mm;
+          const c = trayWidthColor(w);
+          const t = trayWidthStroke(w);
+          return (
+            <div className="flex items-center gap-2 mt-1 mb-1 text-xs text-stone-600">
+              <span>Bredde {w} mm →</span>
+              <svg width="60" height="16"><line x1="4" y1="8" x2="56" y2="8" stroke={color || c} strokeWidth={t} strokeLinecap="round"/></svg>
+              <span>{color ? 'egen farve' : 'auto-farve'}</span>
+            </div>
+          );
+        })()}
+
+        {/* Line style */}
+        <div className="mt-2">
+          <label className="block text-xs font-semibold text-stone-600 mb-1">Linjestil</label>
+          <div className="flex gap-1">
+            {[['solid','Fuld'],['dashed','Stiplet'],['dotted','Prikket']].map(([k,l]) => (
+              <button key={k} onClick={()=>setLineStyle(k)}
+                      className={`flex-1 py-2 rounded text-sm font-semibold ${lineStyle===k?'bg-blue-900 text-white':'bg-white border border-stone-300 text-stone-700'}`}>
+                {l}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Colour — optional override of the width-based auto colour */}
+        <div className="mt-2">
+          <label className="block text-xs font-semibold text-stone-600 mb-1">Farve <span className="font-normal text-stone-400">(valgfri — overstyrer auto-farve)</span></label>
+          <div className="flex items-center gap-2 flex-wrap">
+            {['', '#1565C0', '#2e7d32', '#c62828', '#f9a825', '#6a1b9a', '#00838f', '#37474F'].map(c => (
+              <button key={c||'def'} onClick={()=>setColor(c)} title={c || 'Auto (fra bredde)'}
+                      className={`w-7 h-7 rounded-full border-2 ${color===c ? 'border-blue-900 ring-2 ring-blue-300' : 'border-stone-300'}`}
+                      style={{ background: c || 'repeating-linear-gradient(45deg,#fff,#fff 4px,#ddd 4px,#ddd 8px)' }}/>
+            ))}
+            <input type="color" value={color || '#1f6feb'} onChange={e=>setColor(e.target.value)}
+                   className="w-7 h-7 rounded cursor-pointer border border-stone-300" title="Vælg egen farve"/>
+          </div>
+        </div>
+
+        {/* Bend (knæk) controls */}
+        <div className="border border-amber-100 rounded-lg p-2 mt-2 bg-amber-50/40">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs font-semibold text-amber-900">Knæk på føringsvejen</span>
+            <span className="text-xs text-stone-500">{nWps} knæk</span>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={()=>{ addWaypoint(id); setId(null); }}
+                    className="flex-1 text-xs py-2 bg-amber-500 text-white rounded-lg font-semibold flex items-center justify-center gap-1">
+              <Plus size={13}/> Tilføj knæk
+            </button>
+            {nWps > 0 && (
+              <button onClick={()=>removeWaypoint(id)}
+                      className="flex-1 text-xs py-2 bg-white border border-amber-300 text-amber-700 rounded-lg font-semibold">
+                Fjern sidste knæk
+              </button>
+            )}
+          </div>
+          <p className="text-[11px] text-stone-400 mt-1">Efter tilføjelse: træk det hvide punkt på føringsvejen for at placere knækket.</p>
+        </div>
+
         <div className="flex gap-2 mt-3">
           <button onClick={()=>setId(null)} className="flex-1 py-3 border rounded-lg font-semibold">Annuller</button>
           <button onClick={()=>deleteSeg(id)} className="flex-1 py-3 bg-red-600 text-white rounded-lg font-semibold flex items-center justify-center gap-1"><Trash2 size={14}/> Slet</button>
-          <button onClick={()=>updateSeg(id, { length_m: Number(length_m), tray_type })} className="flex-1 py-3 bg-blue-900 text-white rounded-lg font-semibold">Gem</button>
+          <button onClick={()=>updateSeg(id, { length_m: Number(length_m), tray_type, color: color || undefined, lineStyle })} className="flex-1 py-3 bg-blue-900 text-white rounded-lg font-semibold">Gem</button>
         </div>
       </div>
     </div>
