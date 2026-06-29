@@ -3164,13 +3164,14 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
                           onClick={(e)=>e.stopPropagation()}/>
                 ))}
                 <text x={mid.x} y={mid.y - 8} textAnchor="middle"
-                      fontSize="11" fontWeight="bold" fill="#0B3D91"
-                      style={{ pointerEvents:'none' }}>{id}</text>
+                      fontSize="11" fontWeight="bold" fill="#111827"
+                      style={{ pointerEvents:'none', paintOrder:'stroke' }} stroke="#fff" strokeWidth="3" strokeLinejoin="round">{id}</text>
                 <text x={mid.x} y={mid.y + 12} textAnchor="middle"
-                      fontSize="10" fill="#666" style={{ pointerEvents:'none' }}>
+                      fontSize="10" fill="#444" style={{ pointerEvents:'none', paintOrder:'stroke' }} stroke="#fff" strokeWidth="3" strokeLinejoin="round">
                   {wps.length > 0 ? `${chainM}m` : `${s.length_m}m`} · {s.tray_type}
                 </text>
-                {/* Info legend (toggle): BxH, LS tracks, elevation — free text with an arrow, no box */}
+                {/* Info legend (toggle): BxH, LS tracks, elevation — free text with an arrow, no box.
+                    Placed clear of the ID/length labels and offset to the side to avoid overlap. */}
                 {showLegends && (() => {
                   const tt = trayTypes[s.tray_type];
                   const bxh = tt ? `${tt.width_mm}×${tt.height_mm} mm` : s.tray_type;
@@ -3179,18 +3180,37 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
                   const lines = [bxh, tracks.length ? `Spor: ${tracks.join(', ')}` : 'Spor: —'];
                   if (elev) lines.push(elev);
                   const lineH = 13;
-                  // text block sits above the segment; an arrow points down to it
-                  const topY = mid.y - 30 - lines.length * lineH;
-                  const textX = mid.x + 6;
+                  // Figure out whether the segment runs more horizontally or vertically,
+                  // then push the legend to the side that's clear of the ID/length labels.
+                  const dxSeg = Math.abs(b.x - a.x), dySeg = Math.abs(b.y - a.y);
+                  const horizontal = dxSeg >= dySeg;
+                  // anchor point on the segment the arrow points to
+                  const anchorX = mid.x, anchorY = mid.y;
+                  // legend block position
+                  let blockTopY, textX, anchorTextX, arrowFromY, arrowToY;
+                  const gap = 34;                       // distance from segment to legend
+                  if (horizontal) {
+                    // horizontal segment → place legend well above, clear of the centred labels
+                    blockTopY = anchorY - gap - lines.length * lineH;
+                    textX = anchorX + 8;
+                    arrowFromY = blockTopY + lines.length * lineH + 2;
+                    arrowToY = anchorY - 16;            // stop above the length label
+                  } else {
+                    // vertical segment → labels sit centred; lift legend higher to clear them
+                    blockTopY = anchorY - gap - 18 - lines.length * lineH;
+                    textX = anchorX + 10;
+                    arrowFromY = blockTopY + lines.length * lineH + 2;
+                    arrowToY = anchorY - 22;
+                  }
                   return (
                     <g style={{ pointerEvents:'none' }}>
-                      {/* arrow from the text down to the segment */}
-                      <line x1={mid.x} y1={topY + lines.length*lineH + 2} x2={mid.x} y2={mid.y - 6}
+                      {/* arrow from the text down toward the segment, stopping short of the labels */}
+                      <line x1={anchorX} y1={arrowFromY} x2={anchorX} y2={arrowToY}
                             stroke={effColor} strokeWidth="1.5"/>
-                      <polygon points={`${mid.x-3.5},${mid.y-10} ${mid.x+3.5},${mid.y-10} ${mid.x},${mid.y-3}`} fill={effColor}/>
+                      <polygon points={`${anchorX-3.5},${arrowToY-2} ${anchorX+3.5},${arrowToY-2} ${anchorX},${arrowToY+5}`} fill={effColor}/>
                       {/* free text lines in the segment colour */}
                       {lines.map((ln, i) => (
-                        <text key={i} x={textX} y={topY + lineH*(i+1)}
+                        <text key={i} x={textX} y={blockTopY + lineH*(i+1)}
                               fontSize="11" fontWeight={i===0?'bold':'normal'} fill={effColor}
                               style={{ paintOrder:'stroke' }} stroke="#fff" strokeWidth="3" strokeLinejoin="round">{ln}</text>
                       ))}
