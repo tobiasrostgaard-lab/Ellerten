@@ -1032,7 +1032,7 @@ export default function App() {
 
       {editing && <EditModal editing={editing} setEditing={setEditing} cableTypes={cableTypes} trayTypes={trayTypes} transformerTypes={transformerTypes} segments={segments} setCables={setCables} setSegments={setSegments} setCableTypes={setCableTypes} setTrayTypes={setTrayTypes} setTransformerTypes={setTransformerTypes} cables={cables} />}
       {sizingOpen && <SizingModal close={() => setSizingOpen(false)} project={project} cableTypes={cableTypes} segments={segments} cables={cables} setCables={setCables} />}
-      {drawingOpen && <DrawingModal close={() => setDrawingOpen(false)} segments={segments} setSegments={setSegments} nodes={nodes} setNodes={setNodes} trayTypes={trayTypes} cables={cables} setCables={setCables} cableTypes={cableTypes} bgImage={bgImage} setBgImage={setBgImage} />}
+      {drawingOpen && <DrawingModal close={() => setDrawingOpen(false)} segments={segments} setSegments={setSegments} nodes={nodes} setNodes={setNodes} trayTypes={trayTypes} cables={cables} setCables={setCables} cableTypes={cableTypes} bgImage={bgImage} setBgImage={setBgImage} project={project} />}
       {newProjectOpen && <NewProjectModal close={() => setNewProjectOpen(false)} createProject={createProject} />}
     </div>
   );
@@ -1741,7 +1741,7 @@ function AnalysisTab({ cables, A, cableTypes, segments }) {
 // =========================
 // DRAWING MODAL — interactive cable tray layout editor
 // =========================
-function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage }) {
+function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project }) {
   // local working state
   // Node shape: { x, y, kind: 'junction'|'board'|'load', ...meta }
   //   board meta: { board_type, In_main }
@@ -1767,10 +1767,20 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const [bgPanel, setBgPanel] = useState(false);          // show background adjust panel
   const [bgStatus, setBgStatus] = useState(null);         // visible status/error message
   const [hideChrome, setHideChrome] = useState(false);    // hide panels for more drawing space
-  const [junctionShape, setJunctionShape] = useState('dot');  // dot|tee|corner — chosen before placing
-  const [junctionSize, setJunctionSize] = useState(14);       // default size for new junctions
+  const [junctionShape, setJunctionShape] = useState('dot');  // dot|tee|corner|cross — chosen before placing
+  const [junctionSize, setJunctionSize] = useState(14);       // arm length for new junctions (fixed-ish)
+  // Global circle (end-cap) size — one value for ALL circles in ALL networks.
+  const [circleSize, setCircleSize] = useState(() => {
+    const v = Number(globalThis?.localStorage?.getItem?.('cable_app_circle_size'));
+    return v >= 3 && v <= 20 ? v : 5;
+  });
+  const updateCircleSize = (v) => {
+    setCircleSize(v);
+    try { globalThis?.localStorage?.setItem?.('cable_app_circle_size', String(v)); } catch (e) {}
+  };
   // Opacity per colour category (hex → 0..1) — mirrors per-segment opacity for the slider UI.
   const [catPanel, setCatPanel] = useState(false);            // show network-category panel
+  const [showLegends, setShowLegends] = useState(false);      // show per-segment info legends
   const [catEdit, setCatEdit] = useState(null);               // network id whose objects are being edited
   const [bgLocked, setBgLocked] = useState(() => bgImage?.locked || false);  // lock background scale/position
   const [calibrating, setCalibrating] = useState(false);  // two-point scale calibration in progress
@@ -1785,6 +1795,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const [pending, setPending] = useState(null);     // pending new segment+cable
   const [editNode, setEditNode] = useState(null);
   const [selectedNodes, setSelectedNodes] = useState([]);   // multi-select (same kind only)
+  const selectedNodesRef = useRef([]);                       // synchronous mirror for pointer handlers
   const [multiEdit, setMultiEdit] = useState(null);         // { kind } when editing multiple
   const [editSeg, setEditSeg] = useState(null);       // segment being edited (dialog open)
   const [selectedSeg, setSelectedSeg] = useState(null);  // segment selected (shows bend handles)
@@ -1828,6 +1839,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     setLNodes(state.n || {});
     setLSegs(state.s || {});
     setLCables(state.c || []);
+    selectedNodesRef.current = [];
     setSelectedNodes([]);
     setSelectedSeg(null);
     setCanUndo(undoStackRef.current.length > 0);
@@ -1909,24 +1921,28 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     setConnectFrom(null);
     setCableFrom(null);
     setCableMsg(null);
-    if (m !== 'edit') { setSelectedNodes([]); setSelectedSeg(null); }
+    if (m !== 'edit') { selectedNodesRef.current = []; setSelectedNodes([]); setSelectedSeg(null); }
   };
 
-  // Multi-select: add/remove a node, but only within one category (kind)
+  // Multi-select: add/remove a node, but only within one category (kind).
+  // Uses the ref as the source of truth so rapid taps in pointer handlers never
+  // see a stale value (no upper limit on how many can be selected).
   const toggleSelectNode = (id) => {
-    setSelectedNodes(prev => {
-      const node = lNodes[id];
-      const kind = node?.kind || 'junction';
-      if (prev.includes(id)) return prev.filter(x => x !== id);
-      // If current selection is a different kind, start a fresh selection
-      if (prev.length > 0) {
-        const firstKind = lNodes[prev[0]]?.kind || 'junction';
-        if (firstKind !== kind) return [id];
-      }
-      return [...prev, id];
-    });
+    const prev = selectedNodesRef.current;
+    const kind = lNodes[id]?.kind || 'junction';
+    let next;
+    if (prev.includes(id)) {
+      next = prev.filter(x => x !== id);
+    } else if (prev.length > 0 && (lNodes[prev[0]]?.kind || 'junction') !== kind) {
+      // different category → start fresh
+      next = [id];
+    } else {
+      next = [...prev, id];
+    }
+    selectedNodesRef.current = next;
+    setSelectedNodes(next);
   };
-  const clearSelection = () => { setSelectedNodes([]); setSelectedSeg(null); };
+  const clearSelection = () => { selectedNodesRef.current = []; setSelectedNodes([]); setSelectedSeg(null); };
 
   // Effective colour of a segment (manual override or auto from tray width)
   // Connected-network categories: segments that are physically connected form one
@@ -1982,6 +1998,24 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const colorCategories = useMemo(() => networkInfo.networks.map(n => ({
     id: n.id, color: n.color, count: n.count, widths: n.widths, segIds: n.segIds,
   })), [networkInfo]);
+
+  // LS tracks present on each segment, derived from the cables routed through it.
+  // LS1 = main feeders/ties/UPS; LS2 = loaded (Ib/Iz > threshold); LS3 = lightly loaded.
+  const segLS = useMemo(() => {
+    const lsThreshold = project?.ls_threshold ?? 0.30;
+    const classify = (c) => {
+      if (LS_MAIN.has(c.cable_function || c.function)) return 'LS1';
+      const iz = cableTypes[c.cable_type]?.iz_a ?? 1;
+      return ((c.Ib || 0) / iz) > lsThreshold ? 'LS2' : 'LS3';
+    };
+    const map = {};
+    Object.keys(lSegs).forEach(sid => { map[sid] = new Set(); });
+    (lCables || []).forEach(c => {
+      const ls = classify(c);
+      (c.route || []).forEach(sid => { if (map[sid]) map[sid].add(ls); });
+    });
+    return map;
+  }, [lSegs, lCables, cableTypes, project]);
 
   // Orthogonalise: snap segments to horizontal/vertical based on their dominant axis.
   // We move node positions so connected segments become axis-aligned. Works on a set
@@ -2044,6 +2078,12 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     setLSegs(prev => {
       const next = { ...prev };
       net.segIds.forEach(id => { if (next[id]) next[id] = { ...next[id], opacity: op }; });
+      return next;
+    });
+    // Apply the same opacity to all nodes (junctions, boards, loads) in the network
+    setLNodes(prev => {
+      const next = { ...prev };
+      net.nodeIds.forEach(nid => { if (next[nid]) next[nid] = { ...next[nid], opacity: op }; });
       return next;
     });
   };
@@ -2404,8 +2444,9 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         if (isDouble) {
           nodeTapRef.current = { id: null, t: 0 };
           // Double-tap: edit. If part of a multi-selection, edit all together.
-          if (mode === 'edit' && selectedNodes.length > 1 && selectedNodes.includes(di.id)) {
-            setMultiEdit({ kind: lNodes[selectedNodes[0]]?.kind || 'junction' });
+          const sel = selectedNodesRef.current;
+          if (mode === 'edit' && sel.length > 1 && sel.includes(di.id)) {
+            setMultiEdit({ kind: lNodes[sel[0]]?.kind || 'junction' });
           } else {
             setEditNode(di.id);
           }
@@ -2430,7 +2471,29 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
 
   const confirmPending = () => {
     const segId = nextSegId(lSegs);
-    setLSegs({ ...lSegs, [segId]: { from: pending.from, to: pending.to, length_m: Number(pending.length_m), tray_type: pending.tray_type } });
+    const newSegs = { ...lSegs, [segId]: { from: pending.from, to: pending.to, length_m: Number(pending.length_m), tray_type: pending.tray_type } };
+    setLSegs(newSegs);
+    // If this connects a board to a load (either direction), auto-create a cable
+    // with the shortest route through existing trays and adopt the load's data.
+    const a = lNodes[pending.from], b = lNodes[pending.to];
+    const aKind = a?.kind || 'junction', bKind = b?.kind || 'junction';
+    let boardId = null, loadId = null, loadNode = null;
+    if (aKind === 'board' && bKind === 'load') { boardId = pending.from; loadId = pending.to; loadNode = b; }
+    else if (bKind === 'board' && aKind === 'load') { boardId = pending.to; loadId = pending.from; loadNode = a; }
+    if (boardId && loadId) {
+      const route = findRoute(newSegs, boardId, loadId);
+      const cid = nextCableId(lCables);
+      setLCables([...lCables, {
+        id: cid, from: boardId, to: loadId,
+        function: loadNode.function || 'Socket circuit',
+        V: Number(loadNode.V ?? 230), phases: Number(loadNode.phases ?? 1),
+        cable_type: Object.keys(cableTypes)[0],
+        Ib: Number(loadNode.Ib ?? 0), In: Number(loadNode.In ?? 0),
+        cos_phi: Number(loadNode.cos_phi ?? 0.9),
+        route: route || [],
+        autoCreated: true,
+      }]);
+    }
     setPending(null);
   };
 
@@ -2558,6 +2621,8 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     let arms;
     if (shape === 'tee') {
       arms = [ {x:-1,y:0}, {x:1,y:0}, {x:0,y:1} ];   // left, right, down
+    } else if (shape === 'cross') {
+      arms = [ {x:-1,y:0}, {x:1,y:0}, {x:0,y:-1}, {x:0,y:1} ];  // left, right, up, down
     } else { // corner
       arms = [ {x:-1,y:0}, {x:0,y:1} ];               // left, down
     }
@@ -2801,6 +2866,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         <button onClick={()=>zoomBy(1.25)} className="px-2 py-1.5 rounded text-xs bg-stone-200"><ZoomIn size={14}/></button>
         <button onClick={fitView} className="px-2 py-1.5 rounded text-xs bg-stone-200">Fit</button>
         <button onClick={()=>setCatPanel(p=>!p)} className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${catPanel?'bg-blue-100 text-blue-900':'bg-stone-200 text-stone-700'}`} title="Farve-kategorier & opacitet"><Layers size={13}/> Kategorier</button>
+        <button onClick={()=>setShowLegends(v=>!v)} className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${showLegends?'bg-blue-100 text-blue-900':'bg-stone-200 text-stone-700'}`} title="Vis/skjul info-bokse på alle føringsveje"><FileText size={13}/> Legender</button>
         <button onClick={straightenAll} className="px-2 py-1.5 rounded text-xs bg-amber-100 text-amber-900 flex items-center gap-1" title="Ret alle føringsveje op (vinkelret)"><GitBranch size={13}/> Ret alt op</button>
         <div className="ml-auto">
           <button onClick={renumber} className="px-2 py-1.5 rounded text-xs bg-purple-100 text-purple-900 flex items-center gap-1" title="Renumber all segments"><RefreshCw size={12}/> WC###</button>
@@ -2815,16 +2881,17 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
             ['dot', 'Punkt', <svg key="d" width="22" height="22" viewBox="0 0 22 22"><circle cx="11" cy="11" r="6" fill="#fff" stroke="#1565C0" strokeWidth="2"/></svg>],
             ['tee', 'T-stykke', <svg key="t" width="22" height="22" viewBox="0 0 22 22"><line x1="3" y1="8" x2="19" y2="8" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round"/><line x1="11" y1="8" x2="11" y2="19" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round"/><circle cx="3" cy="8" r="2" fill="#1565C0"/><circle cx="19" cy="8" r="2" fill="#1565C0"/><circle cx="11" cy="19" r="2" fill="#1565C0"/></svg>],
             ['corner', 'Hjørne', <svg key="c" width="22" height="22" viewBox="0 0 22 22"><polyline points="5,4 5,15 16,15" fill="none" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/><circle cx="5" cy="4" r="2" fill="#1565C0"/><circle cx="16" cy="15" r="2" fill="#1565C0"/></svg>],
+            ['cross', 'Kryds', <svg key="x" width="22" height="22" viewBox="0 0 22 22"><line x1="3" y1="11" x2="19" y2="11" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round"/><line x1="11" y1="3" x2="11" y2="19" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round"/><circle cx="3" cy="11" r="2" fill="#1565C0"/><circle cx="19" cy="11" r="2" fill="#1565C0"/><circle cx="11" cy="3" r="2" fill="#1565C0"/><circle cx="11" cy="19" r="2" fill="#1565C0"/></svg>],
           ].map(([k, label, icon]) => (
             <button key={k} onClick={()=>setJunctionShape(k)}
                     className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border-2 ${junctionShape===k ? 'border-blue-600 bg-white' : 'border-transparent bg-white/60'}`}>
               {icon} {label}
             </button>
           ))}
-          <label className="text-xs text-blue-900 flex items-center gap-1 ml-auto shrink-0">
-            Størrelse
-            <input type="range" min="6" max="40" value={junctionSize} onChange={e=>setJunctionSize(Number(e.target.value))} className="w-20"/>
-            <span className="w-7">{junctionSize}</span>
+          <label className="text-xs text-blue-900 flex items-center gap-1 ml-auto shrink-0" title="Størrelse på alle cirkler i hele tegningen">
+            Cirkelstørrelse
+            <input type="range" min="3" max="20" value={circleSize} onChange={e=>updateCircleSize(Number(e.target.value))} className="w-20"/>
+            <span className="w-7">{circleSize}</span>
           </label>
         </div>
       )}
@@ -2993,7 +3060,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       {/* Help bar */}
       {!hideChrome && (
       <div className="bg-blue-50 text-blue-900 text-xs text-center py-1.5 px-2">
-        {mode === 'junction' && `→ Tap for at placere ${junctionShape==='tee'?'et T-stykke':junctionShape==='corner'?'et hjørne':'et punkt'} · dobbeltklik for at redigere`}
+        {mode === 'junction' && `→ Tap for at placere ${junctionShape==='tee'?'et T-stykke':junctionShape==='corner'?'et hjørne':junctionShape==='cross'?'et vejkryds':'et punkt'} · dobbeltklik for at redigere`}
         {mode === 'board' && '→ Tap for at placere en tavle (Q1, Q2, …) · dobbeltklik for at redigere'}
         {mode === 'load' && '→ Tap for at placere en belastning (X1, X2, …) · dobbeltklik for at redigere'}
         {mode === 'connect' && (connectFrom ? `→ Tap en anden knude for at forbinde til ${connectFrom}` : '→ Tap første knude/tavle/last')}
@@ -3103,6 +3170,33 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
                       fontSize="10" fill="#666" style={{ pointerEvents:'none' }}>
                   {wps.length > 0 ? `${chainM}m` : `${s.length_m}m`} · {s.tray_type}
                 </text>
+                {/* Info legend (toggle): BxH, LS tracks, elevation — free text with an arrow, no box */}
+                {showLegends && (() => {
+                  const tt = trayTypes[s.tray_type];
+                  const bxh = tt ? `${tt.width_mm}×${tt.height_mm} mm` : s.tray_type;
+                  const tracks = Array.from(segLS[id] || []).sort();
+                  const elev = s.elevation_mm != null ? `Kote ${s.elevation_mm} mm` : null;
+                  const lines = [bxh, tracks.length ? `Spor: ${tracks.join(', ')}` : 'Spor: —'];
+                  if (elev) lines.push(elev);
+                  const lineH = 13;
+                  // text block sits above the segment; an arrow points down to it
+                  const topY = mid.y - 30 - lines.length * lineH;
+                  const textX = mid.x + 6;
+                  return (
+                    <g style={{ pointerEvents:'none' }}>
+                      {/* arrow from the text down to the segment */}
+                      <line x1={mid.x} y1={topY + lines.length*lineH + 2} x2={mid.x} y2={mid.y - 6}
+                            stroke={effColor} strokeWidth="1.5"/>
+                      <polygon points={`${mid.x-3.5},${mid.y-10} ${mid.x+3.5},${mid.y-10} ${mid.x},${mid.y-3}`} fill={effColor}/>
+                      {/* free text lines in the segment colour */}
+                      {lines.map((ln, i) => (
+                        <text key={i} x={textX} y={topY + lineH*(i+1)}
+                              fontSize="11" fontWeight={i===0?'bold':'normal'} fill={effColor}
+                              style={{ paintOrder:'stroke' }} stroke="#fff" strokeWidth="3" strokeLinejoin="round">{ln}</text>
+                      ))}
+                    </g>
+                  );
+                })()}
               </g>
             );
           })}
@@ -3158,11 +3252,12 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
             }
             const stroke = isFrom ? '#a04500' : (isSel ? '#9C5700' : (p.color || defStroke));
             const fill = isFrom ? '#FFE0B2' : (isSel ? '#FFF3CD' : (p.color ? lightenColor(p.color) : (kind==='board' ? '#E3F2FD' : kind==='load' ? '#ECEFF1' : (kind==='junction' ? lightenColor(defStroke) : '#fff'))));
+            const nodeOpacity = dim ? 0.35 : (isSel || isFrom ? 1 : (p.opacity ?? 1));
             const common = {
               onClick:(e)=>onNodeTap(e, id),
               onDoubleClick:(e)=>onNodeDouble(e, id),
               onPointerDown:(e)=>startDrag(e, id),
-              style:{ cursor: mode==='edit' ? 'move' : 'pointer', touchAction:'none', opacity: dim ? 0.35 : 1 },
+              style:{ cursor: mode==='edit' ? 'move' : 'pointer', touchAction:'none', opacity: nodeOpacity },
             };
             if (kind === 'board') {
               const bw = (p.size || 14) * 1.85, bh = (p.size || 14) * 1.07;
@@ -3183,12 +3278,14 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
                 </g>
               );
             }
-            // Junction: dot (circle), T-piece, or corner — unified design language
+            // Junction: dot (circle), T-piece, corner, or cross — unified design.
+            // Arm length and line thickness are FIXED; only the circle (end-cap)
+            // size is adjustable, and it's a single global value for every junction.
             const jShape = p.shape || 'dot';
-            const jSize = p.size || 14;
             const rot = p.rotation || 0;
-            const sw = Math.max(3, Math.round(jSize / 3.2));   // line thickness
-            const endR = Math.max(3, jSize / 3.2);             // end-cap radius
+            const jSize = 14;                                   // fixed arm length
+            const sw = 4;                                       // fixed line thickness
+            const endR = circleSize;                            // global circle radius
             const isJSel = editNode === id || selectedNodes.includes(id);
             // shared end-cap: white fill, coloured ring — matches the dot junction
             const endCap = (cx, cy, key) => (
@@ -3241,11 +3338,37 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
                 </g>
               );
             }
+            if (jShape === 'cross') {
+              const arm = jSize;
+              const showRot = mode === 'edit' && isJSel;
+              return (
+                <g key={id}>
+                  <g {...common} transform={`rotate(${rot} ${p.x} ${p.y})`}>
+                    <circle cx={p.x} cy={p.y} r={jSize+8} fill="transparent"/>
+                    {isJSel && <circle cx={p.x} cy={p.y} r={jSize+5} fill="none" stroke="#9C5700" strokeWidth="1.5" strokeDasharray="3,2"/>}
+                    <line x1={p.x-arm} y1={p.y} x2={p.x+arm} y2={p.y} stroke={stroke} strokeWidth={sw} strokeLinecap="round"/>
+                    <line x1={p.x} y1={p.y-arm} x2={p.x} y2={p.y+arm} stroke={stroke} strokeWidth={sw} strokeLinecap="round"/>
+                    {endCap(p.x-arm, p.y, 'l')}
+                    {endCap(p.x+arm, p.y, 'r')}
+                    {endCap(p.x, p.y-arm, 't')}
+                    {endCap(p.x, p.y+arm, 'b')}
+                    <text x={p.x+jSize*0.55} y={p.y-jSize*0.55} textAnchor="start" fontSize="9" fontWeight="bold" fill={stroke} style={{ pointerEvents:'none', userSelect:'none' }} transform={`rotate(${-rot} ${p.x+jSize*0.55} ${p.y-jSize*0.55})`}>{id}</text>
+                  </g>
+                  {showRot && (
+                    <g style={{ cursor:'grab', touchAction:'none' }} onPointerDown={(e)=>startRotateDrag(e, id)}>
+                      <line x1={p.x} y1={p.y} x2={p.x} y2={p.y-jSize-18} stroke="#9C5700" strokeWidth="1.5" strokeDasharray="2,2"/>
+                      <circle cx={p.x} cy={p.y-jSize-18} r="6" fill="#9C5700" stroke="#fff" strokeWidth="2"/>
+                    </g>
+                  )}
+                </g>
+              );
+            }
             return (
               <g key={id} {...common}>
-                {isJSel && <circle cx={p.x} cy={p.y} r={jSize+4} fill="none" stroke="#9C5700" strokeWidth="1.5" strokeDasharray="3,2"/>}
-                <circle cx={p.x} cy={p.y} r={jSize} fill={fill} stroke={stroke} strokeWidth="2.5"/>
-                <text x={p.x} y={p.y+4} textAnchor="middle" fontSize={Math.max(8, Math.min(jSize-4, 11))} fontWeight="bold" fill={stroke} style={{ pointerEvents:'none', userSelect:'none' }}>{id}</text>
+                {isJSel && <circle cx={p.x} cy={p.y} r={endR+4} fill="none" stroke="#9C5700" strokeWidth="1.5" strokeDasharray="3,2"/>}
+                <circle cx={p.x} cy={p.y} r={jSize+8} fill="transparent"/>
+                <circle cx={p.x} cy={p.y} r={endR} fill="#fff" stroke={stroke} strokeWidth="2"/>
+                <text x={p.x} y={p.y-endR-3} textAnchor="middle" fontSize="9" fontWeight="bold" fill={stroke} style={{ pointerEvents:'none', userSelect:'none' }}>{id}</text>
               </g>
             );
           })}
@@ -3321,7 +3444,15 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         <div className="absolute inset-0 bg-black/50 z-10 flex items-end lg:items-center justify-center p-4">
           <div className="bg-white p-4 rounded-2xl w-full lg:max-w-md max-h-[85vh] overflow-y-auto">
             <h3 className="font-bold mb-3 text-blue-900">Ny føringsvej: {pending.from} → {pending.to}</h3>
-            <p className="text-xs text-stone-500 mb-3">Auto-beregnet længde fra skærm-distance. Tilret hvis nødvendigt. Kabler tilføjes separat i Kabel-mode.</p>
+            {(() => {
+              const a = lNodes[pending.from], b = lNodes[pending.to];
+              const isBoardLoad = (a?.kind==='board' && b?.kind==='load') || (b?.kind==='board' && a?.kind==='load');
+              return isBoardLoad ? (
+                <p className="text-xs text-green-700 bg-green-50 rounded-lg p-2 mb-3">⚡ Tavle → last: der oprettes automatisk et kabel med korteste rute. Du kan ændre kablets rute i Kabler-fanen.</p>
+              ) : (
+                <p className="text-xs text-stone-500 mb-3">Auto-beregnet længde fra skærm-distance. Tilret hvis nødvendigt. Kabler tilføjes separat i Kabel-mode.</p>
+              );
+            })()}
             <FormField label="Længde [m]" type="number" step="0.5" value={pending.length_m} onChange={v=>setPending({...pending, length_m: v})}/>
             <Selector label="Tray type" value={pending.tray_type} onChange={v=>setPending({...pending, tray_type: v})} options={Object.keys(trayTypes)}/>
             <div className="flex gap-2 mt-3">
@@ -3333,8 +3464,10 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       )}
 
       {/* Edit node dialog */}
-      {editNode && <NodeEditDialog id={editNode} setId={setEditNode} lNodes={lNodes} renameNode={renameNode} deleteNode={deleteNode} updateNode={updateNode} nodeConnCount={nodeConnCount} cableConnCount={cableConnCount} trayTypes={trayTypes}/>}
+      {editNode && <NodeEditDialog id={editNode} setId={setEditNode} lNodes={lNodes} renameNode={renameNode} deleteNode={deleteNode} updateNode={updateNode} nodeConnCount={nodeConnCount} cableConnCount={cableConnCount} trayTypes={trayTypes} circleSize={circleSize} updateCircleSize={updateCircleSize}/>}
       {multiEdit && <MultiEditModal kind={multiEdit.kind} ids={selectedNodes} close={()=>setMultiEdit(null)}
+        lNodes={lNodes} trayTypes={trayTypes} circleSize={circleSize} updateCircleSize={updateCircleSize}
+        openNode={(id)=>{ setMultiEdit(null); setEditNode(id); }}
         applyToAll={(patch)=>{
           setLNodes(prev => {
             const next = { ...prev };
@@ -3355,7 +3488,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
             Object.entries(prev).forEach(([sid, s]) => { if (!selectedNodes.includes(s.from) && !selectedNodes.includes(s.to)) next[sid] = s; });
             return next;
           });
-          setSelectedNodes([]); setMultiEdit(null);
+          selectedNodesRef.current = []; setSelectedNodes([]); setMultiEdit(null);
         }}
       />}
 
@@ -3366,11 +3499,11 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
           net={networkInfo.byId[catEdit]}
           netIndex={colorCategories.findIndex(c => c.id === catEdit)}
           lSegs={lSegs} lNodes={lNodes} trayTypes={trayTypes}
+          circleSize={circleSize} updateCircleSize={updateCircleSize}
           close={()=>setCatEdit(null)}
           openSeg={(id)=>{ setCatEdit(null); setEditSeg(id); }}
           openNode={(id)=>{ setCatEdit(null); setEditNode(id); }}
           setCommonTrayType={(tt)=>setNetworkTrayType(catEdit, tt)}
-          setCommonNodeSize={(sz)=>setNetworkNodeSize(catEdit, sz)}
           setNetworkColor={(c)=>setNetworkColor(catEdit, c)}
         />
       )}
@@ -3450,7 +3583,29 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
           <div className="absolute inset-0 bg-black/50 z-10 flex items-end lg:items-center justify-center p-4" onClick={()=>setEditCable(null)}>
             <div className="bg-white p-4 rounded-2xl w-full lg:max-w-md max-h-[85vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
               <h3 className="font-bold mb-1 text-blue-900 flex items-center gap-2"><Cable size={18}/> {c.id}: {c.from} → {c.to}</h3>
-              <div className="text-xs text-stone-500 mb-3">Rute: {(c.route||[]).join(' → ') || '(ingen)'}</div>
+              <div className="text-xs text-stone-500 mb-2">Rute: {(c.route||[]).join(' → ') || '(ingen)'}</div>
+
+              {/* Route editing — auto shortest path or manual entry */}
+              <div className="border border-blue-100 bg-blue-50/40 rounded-lg p-2 mb-3">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-semibold text-blue-900">Føringsvej for kablet</span>
+                  <button onClick={()=>{ const r = findRoute(lSegs, c.from, c.to); updateCable(c.id, { route: r || [] }); }}
+                          className="text-xs px-2 py-1 bg-blue-900 text-white rounded flex items-center gap-1">
+                    <RefreshCw size={11}/> Korteste rute
+                  </button>
+                </div>
+                <label className="block text-[11px] text-stone-600 mb-1">Manuel rute (segment-ID'er adskilt med komma)</label>
+                <input type="text" defaultValue={(c.route||[]).join(', ')}
+                       onBlur={e=>{
+                         const ids = e.target.value.split(',').map(x=>x.trim()).filter(Boolean);
+                         const valid = ids.filter(x => lSegs[x]);
+                         updateCable(c.id, { route: valid });
+                       }}
+                       placeholder="fx WC001, WC003, WC005"
+                       className="w-full border border-stone-300 rounded-lg px-2 py-1.5 text-sm"/>
+                <p className="text-[11px] text-stone-400 mt-1">Ukendte segment-ID'er ignoreres. Forlad feltet for at gemme ruten.</p>
+              </div>
+
               <Selector label="Funktion" value={c.function} onChange={v=>updateCable(c.id, { function: v })} options={FUNCTIONS}/>
               <Selector label="Kabeltype" value={c.cable_type} onChange={v=>updateCable(c.id, { cable_type: v })} options={Object.keys(cableTypes)}/>
               <div className="grid grid-cols-2 gap-2">
@@ -3482,7 +3637,7 @@ function ToolBtn({ active, onClick, icon: Icon, label }) {
   );
 }
 
-function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode, nodeConnCount, cableConnCount, trayTypes }) {
+function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode, nodeConnCount, cableConnCount, trayTypes, circleSize, updateCircleSize }) {
   const node = lNodes[id];
   const [name, setName] = useState(id);
   const [kind, setKind] = useState(node.kind || 'junction');
@@ -3559,7 +3714,7 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
             <div>
               <label className="block text-xs font-semibold text-stone-600 mb-1">Form</label>
               <div className="flex gap-1">
-                {[['dot','Punkt'],['tee','T-stykke'],['corner','Hjørne']].map(([k,l]) => (
+                {[['dot','Punkt'],['tee','T-stykke'],['corner','Hjørne'],['cross','Kryds']].map(([k,l]) => (
                   <button key={k} onClick={()=>setM('shape', k)}
                           className={`flex-1 py-2 rounded text-sm font-semibold ${meta.shape===k?'bg-blue-900 text-white':'bg-white border border-stone-300 text-stone-700'}`}>{l}</button>
                 ))}
@@ -3579,7 +3734,7 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
               <p className="text-[11px] text-stone-400 mt-1">Farven følger automatisk det netværk knuden er forbundet til.</p>
             </div>
 
-            {(meta.shape === 'tee' || meta.shape === 'corner') && (
+            {(meta.shape === 'tee' || meta.shape === 'corner' || meta.shape === 'cross') && (
               <div>
                 <label className="block text-xs font-semibold text-stone-600 mb-1">Orientering</label>
                 <div className="flex items-center gap-3">
@@ -3592,6 +3747,15 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
                           <line x1="28" y1="28" x2="28" y2="46" stroke="#1565C0" strokeWidth="4" strokeLinecap="round"/>
                           <circle cx="10" cy="28" r="4" fill="#fff" stroke="#1565C0" strokeWidth="2"/>
                           <circle cx="46" cy="28" r="4" fill="#fff" stroke="#1565C0" strokeWidth="2"/>
+                          <circle cx="28" cy="46" r="4" fill="#fff" stroke="#1565C0" strokeWidth="2"/>
+                        </>
+                      ) : meta.shape === 'cross' ? (
+                        <>
+                          <line x1="10" y1="28" x2="46" y2="28" stroke="#1565C0" strokeWidth="4" strokeLinecap="round"/>
+                          <line x1="28" y1="10" x2="28" y2="46" stroke="#1565C0" strokeWidth="4" strokeLinecap="round"/>
+                          <circle cx="10" cy="28" r="4" fill="#fff" stroke="#1565C0" strokeWidth="2"/>
+                          <circle cx="46" cy="28" r="4" fill="#fff" stroke="#1565C0" strokeWidth="2"/>
+                          <circle cx="28" cy="10" r="4" fill="#fff" stroke="#1565C0" strokeWidth="2"/>
                           <circle cx="28" cy="46" r="4" fill="#fff" stroke="#1565C0" strokeWidth="2"/>
                         </>
                       ) : (
@@ -3622,10 +3786,16 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
           </div>
         )}
 
-        {/* Size — applies to all node kinds */}
-        <label className="block text-xs text-stone-600 mb-2">Størrelse: {meta.size}px
-          <input type="range" min="6" max="40" value={meta.size} onChange={e=>setM('size', Number(e.target.value))} className="w-full"/>
-        </label>
+        {/* Size: junctions use the global circle size; boards/loads use own size */}
+        {kind === 'junction' ? (
+          <label className="block text-xs text-stone-600 mb-2">Cirkelstørrelse: {circleSize}px <span className="text-stone-400">(gælder alle cirkler i hele tegningen)</span>
+            <input type="range" min="3" max="20" value={circleSize} onChange={e=>updateCircleSize(Number(e.target.value))} className="w-full"/>
+          </label>
+        ) : (
+          <label className="block text-xs text-stone-600 mb-2">Størrelse: {meta.size}px
+            <input type="range" min="6" max="40" value={meta.size} onChange={e=>setM('size', Number(e.target.value))} className="w-full"/>
+          </label>
+        )}
 
         {/* Colour picker — applies to all node kinds */}
         <div className="border border-stone-200 rounded-lg p-2 mb-2">
@@ -3652,7 +3822,7 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
   );
 }
 
-function MultiEditModal({ kind, ids, close, applyToAll, deleteAll }) {
+function MultiEditModal({ kind, ids, close, applyToAll, deleteAll, lNodes, trayTypes, openNode, circleSize, updateCircleSize }) {
   const [color, setColor] = useState('');
   const [size, setSize] = useState('');
   const [shape, setShape] = useState('');
@@ -3660,6 +3830,7 @@ function MultiEditModal({ kind, ids, close, applyToAll, deleteAll }) {
   const [func, setFunc] = useState('');
   const label = kind === 'board' ? 'tavler' : kind === 'load' ? 'laster' : 'punkter';
   const palette = ['', '#1565C0', '#2e7d32', '#c62828', '#f9a825', '#6a1b9a', '#00838f', '#37474F'];
+  const shapeName = (s) => s==='tee'?'T-stykke':s==='corner'?'Hjørne':s==='cross'?'Kryds':'Punkt';
   const apply = () => {
     const patch = {};
     if (color !== '') patch.color = color || undefined;
@@ -3672,75 +3843,113 @@ function MultiEditModal({ kind, ids, close, applyToAll, deleteAll }) {
   };
   return (
     <div className="absolute inset-0 bg-black/50 z-20 flex items-end lg:items-center justify-center p-4" onClick={close}>
-      <div className="bg-white p-4 rounded-2xl w-full lg:max-w-md max-h-[85vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+      <div className="bg-white p-4 rounded-2xl w-full lg:max-w-lg max-h-[88vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
         <h3 className="font-bold mb-1 text-blue-900">Rediger {ids.length} {label}</h3>
-        <p className="text-xs text-stone-500 mb-3">Kun udfyldte felter ændres på alle valgte. Tomme felter lades urørt.</p>
+        <p className="text-xs text-stone-500 mb-3">Klik et objekt for at redigere det individuelt, eller sæt fælles værdier nedenfor (kun udfyldte felter ændres).</p>
 
-        {kind === 'junction' && (
-          <div className="mb-2">
-            <label className="block text-xs font-semibold text-stone-600 mb-1">Form (valgfri)</label>
-            <div className="flex gap-1">
-              {[['','—'],['dot','Punkt'],['tee','T-stykke'],['corner','Hjørne']].map(([k,l]) => (
-                <button key={k||'none'} onClick={()=>setShape(k)}
-                        className={`flex-1 py-2 rounded text-xs font-semibold ${shape===k?'bg-blue-900 text-white':'bg-white border border-stone-300 text-stone-700'}`}>{l}</button>
+        {/* Common settings for the whole selection */}
+        <div className="border border-blue-100 bg-blue-50/40 rounded-lg p-2 mb-3 space-y-2">
+          <div className="text-xs font-semibold text-blue-900">Fælles for alle valgte</div>
+
+          {kind === 'junction' && (
+            <div>
+              <label className="block text-[11px] text-stone-600 mb-1">Form</label>
+              <div className="flex gap-1">
+                {[['','—'],['dot','Punkt'],['tee','T-stykke'],['corner','Hjørne'],['cross','Kryds']].map(([k,l]) => (
+                  <button key={k||'none'} onClick={()=>setShape(k)}
+                          className={`flex-1 py-1.5 rounded text-xs font-semibold ${shape===k?'bg-blue-900 text-white':'bg-white border border-stone-300 text-stone-700'}`}>{l}</button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {kind === 'load' && (
+            <div>
+              <label className="block text-[11px] text-stone-600 mb-1">Funktion</label>
+              <select value={func} onChange={e=>setFunc(e.target.value)} className="w-full border border-stone-300 rounded-lg px-2 py-1.5 text-sm">
+                <option value="">— uændret —</option>
+                {FUNCTIONS.map(f => <option key={f} value={f}>{f}</option>)}
+              </select>
+            </div>
+          )}
+
+          {kind === 'junction' ? (
+            <div>
+              <label className="block text-[11px] text-stone-600 mb-1">Cirkelstørrelse: {circleSize}px <span className="text-stone-400">(alle cirkler i hele tegningen)</span></label>
+              <input type="range" min="3" max="20" value={circleSize} onChange={e=>updateCircleSize(Number(e.target.value))} className="w-full"/>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-[11px] text-stone-600 mb-1">Fælles størrelse {size !== '' ? `(${size}px)` : ''}</label>
+              <div className="flex items-center gap-2">
+                <input type="range" min="6" max="40" value={size || 14} onChange={e=>setSize(e.target.value)} className="flex-1"/>
+                <span className="text-xs w-16">{size === '' ? 'uændret' : `${size}px`}</span>
+                {size !== '' && <button onClick={()=>setSize('')} className="text-[11px] text-stone-400 underline">nulstil</button>}
+              </div>
+            </div>
+          )}
+
+          {kind === 'junction' && (
+            <div>
+              <label className="block text-[11px] text-stone-600 mb-1">Rotation</label>
+              <div className="grid grid-cols-5 gap-1">
+                <button onClick={()=>setRotation('')} className={`py-1.5 rounded text-xs font-semibold ${rotation===''?'bg-blue-900 text-white':'bg-white border border-stone-300'}`}>—</button>
+                {[0,90,180,270].map(d => (
+                  <button key={d} onClick={()=>setRotation(String(d))} className={`py-1.5 rounded text-xs font-semibold ${rotation===String(d)?'bg-blue-900 text-white':'bg-white border border-stone-300'}`}>{d}°</button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label className="block text-[11px] text-stone-600 mb-1">Farve</label>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {palette.map(c => (
+                <button key={c||'def'} onClick={()=>setColor(c)} title={c || 'Standard'}
+                        className={`w-6 h-6 rounded-full border-2 ${color===c ? 'border-blue-900 ring-1 ring-blue-300' : 'border-stone-300'}`}
+                        style={{ background: c || 'repeating-linear-gradient(45deg,#fff,#fff 4px,#ddd 4px,#ddd 8px)' }}/>
               ))}
+              <input type="color" value={color || '#1565C0'} onChange={e=>setColor(e.target.value)}
+                     className="w-6 h-6 rounded cursor-pointer border border-stone-300" title="Vælg egen farve"/>
             </div>
           </div>
-        )}
 
-        {kind === 'load' && (
-          <div className="mb-2">
-            <label className="block text-xs font-semibold text-stone-600 mb-1">Funktion (valgfri)</label>
-            <select value={func} onChange={e=>setFunc(e.target.value)} className="w-full border border-stone-300 rounded-lg px-2 py-2 text-sm">
-              <option value="">— uændret —</option>
-              {FUNCTIONS.map(f => <option key={f} value={f}>{f}</option>)}
-            </select>
-          </div>
-        )}
-
-        <label className="block text-xs font-semibold text-stone-600 mb-1">Størrelse (valgfri)</label>
-        <div className="flex items-center gap-2 mb-3">
-          <input type="range" min="6" max="40" value={size || 14} onChange={e=>setSize(e.target.value)} className="flex-1"/>
-          <span className="text-sm w-16">{size === '' ? 'uændret' : `${size}px`}</span>
-          {size !== '' && <button onClick={()=>setSize('')} className="text-xs text-stone-400 underline">nulstil</button>}
+          <button onClick={apply} className="w-full py-2 bg-blue-900 text-white rounded-lg text-sm font-semibold">Anvend på alle valgte</button>
         </div>
 
-        {kind === 'junction' && (
-          <div className="mb-3">
-            <label className="block text-xs font-semibold text-stone-600 mb-1">Rotation (valgfri)</label>
-            <div className="grid grid-cols-5 gap-1">
-              <button onClick={()=>setRotation('')} className={`py-2 rounded text-xs font-semibold ${rotation===''?'bg-blue-900 text-white':'bg-white border border-stone-300'}`}>—</button>
-              {[0,90,180,270].map(d => (
-                <button key={d} onClick={()=>setRotation(String(d))} className={`py-2 rounded text-xs font-semibold ${rotation===String(d)?'bg-blue-900 text-white':'bg-white border border-stone-300'}`}>{d}°</button>
-              ))}
-            </div>
+        {/* Individual objects in the selection */}
+        <div className="mb-3">
+          <div className="text-xs font-semibold text-stone-700 mb-1">Valgte objekter ({ids.length})</div>
+          <div className="space-y-1">
+            {ids.map(id => {
+              const n = lNodes[id];
+              if (!n) return null;
+              const detail = kind === 'junction'
+                ? shapeName(n.shape) + (n.tray_type ? ` · ${trayTypes[n.tray_type]?.width_mm} mm` : '')
+                : kind === 'load' ? (n.function || '') : (n.board_type || '');
+              return (
+                <button key={id} onClick={()=>openNode(id)}
+                        className="w-full flex items-center gap-2 px-2 py-2 bg-stone-50 hover:bg-stone-100 rounded-lg text-left text-sm">
+                  <span className="font-semibold text-stone-700">{id}</span>
+                  <span className="text-xs text-stone-500">{detail}</span>
+                  <Edit2 size={13} className="text-blue-700 ml-auto"/>
+                </button>
+              );
+            })}
           </div>
-        )}
-
-        <label className="block text-xs font-semibold text-stone-600 mb-1">Farve (valgfri)</label>
-        <div className="flex items-center gap-2 flex-wrap mb-4">
-          {palette.map(c => (
-            <button key={c||'def'} onClick={()=>setColor(c)} title={c || 'Standard'}
-                    className={`w-7 h-7 rounded-full border-2 ${color===c ? 'border-blue-900 ring-2 ring-blue-300' : 'border-stone-300'}`}
-                    style={{ background: c || 'repeating-linear-gradient(45deg,#fff,#fff 4px,#ddd 4px,#ddd 8px)' }}/>
-          ))}
-          <input type="color" value={color || '#1565C0'} onChange={e=>setColor(e.target.value)}
-                 className="w-7 h-7 rounded cursor-pointer border border-stone-300" title="Vælg egen farve"/>
         </div>
 
         <div className="flex gap-2">
           <button onClick={deleteAll} className="flex-1 py-3 bg-red-600 text-white rounded-lg font-semibold flex items-center justify-center gap-1"><Trash2 size={14}/> Slet alle</button>
-          <button onClick={close} className="flex-1 py-3 border border-stone-300 rounded-lg font-semibold">Annuller</button>
-          <button onClick={apply} className="flex-[2] py-3 bg-blue-900 text-white rounded-lg font-semibold">Anvend på alle</button>
+          <button onClick={close} className="flex-[2] py-3 bg-blue-900 text-white rounded-lg font-semibold">Færdig</button>
         </div>
       </div>
     </div>
   );
 }
 
-function CategoryEditModal({ net, netIndex, lSegs, lNodes, trayTypes, close, openSeg, openNode, setCommonTrayType, setCommonNodeSize, setNetworkColor }) {
+function CategoryEditModal({ net, netIndex, lSegs, lNodes, trayTypes, close, openSeg, openNode, setCommonTrayType, setNetworkColor, circleSize, updateCircleSize }) {
   const [commonTT, setCommonTT] = useState('');
-  const [commonSize, setCommonSize] = useState('');
   const segIds = net.segIds;
   const nodeIds = Array.from(net.nodeIds);
   const junctionIds = nodeIds.filter(id => (lNodes[id]?.kind || 'junction') === 'junction');
@@ -3771,13 +3980,8 @@ function CategoryEditModal({ net, netIndex, lSegs, lNodes, trayTypes, close, ope
             </div>
           </div>
           <div>
-            <label className="block text-[11px] text-stone-600 mb-1">Fælles knude-størrelse {commonSize ? `(${commonSize}px)` : ''}</label>
-            <div className="flex gap-2 items-center">
-              <input type="range" min="6" max="40" value={commonSize || 14} onChange={e=>setCommonSize(e.target.value)} className="flex-1"/>
-              <button onClick={()=>{ if (commonSize) setCommonNodeSize(Number(commonSize)); }}
-                      disabled={!commonSize}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${commonSize?'bg-blue-900 text-white':'bg-stone-200 text-stone-400'}`}>Anvend</button>
-            </div>
+            <label className="block text-[11px] text-stone-600 mb-1">Cirkelstørrelse: {circleSize}px <span className="text-stone-400">(alle cirkler i hele tegningen)</span></label>
+            <input type="range" min="3" max="20" value={circleSize} onChange={e=>updateCircleSize(Number(e.target.value))} className="w-full"/>
           </div>
         </div>
 
@@ -3844,6 +4048,7 @@ function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addW
   const [tray_type, setTT] = useState(s.tray_type);
   const [color, setColor] = useState(s.color || '');
   const [lineStyle, setLineStyle] = useState(s.lineStyle || 'solid');
+  const [elevation_mm, setElev] = useState(s.elevation_mm ?? '');
   const nWps = (s.waypoints || []).length;
   return (
     <div className="absolute inset-0 bg-black/50 z-10 flex items-end lg:items-center justify-center p-4" onClick={()=>setId(null)}>
@@ -3851,6 +4056,7 @@ function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addW
         <h3 className="font-bold mb-3 text-blue-900">Segment {id}</h3>
         <p className="text-xs text-stone-500 mb-3">{s.from} → {s.to}</p>
         <FormField label="Længde [m]" type="number" step="0.5" value={length_m} onChange={setL}/>
+        <FormField label="Højde / montagekote [mm]" type="number" value={elevation_mm} onChange={setElev} hint="fx 3000 = 3 m over gulv (valgfri)"/>
         <Selector label="Tray type (bredden bestemmer tykkelsen)" value={tray_type} onChange={setTT} options={Object.keys(trayTypes)}/>
 
         {/* Preview: thickness from width; colour shown is the current/own colour */}
@@ -3923,7 +4129,7 @@ function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addW
         <div className="flex gap-2 mt-3">
           <button onClick={()=>setId(null)} className="flex-1 py-3 border rounded-lg font-semibold">Annuller</button>
           <button onClick={()=>deleteSeg(id)} className="flex-1 py-3 bg-red-600 text-white rounded-lg font-semibold flex items-center justify-center gap-1"><Trash2 size={14}/> Slet</button>
-          <button onClick={()=>updateSeg(id, { length_m: Number(length_m), tray_type, color: color || undefined, lineStyle })} className="flex-1 py-3 bg-blue-900 text-white rounded-lg font-semibold">Gem</button>
+          <button onClick={()=>updateSeg(id, { length_m: Number(length_m), tray_type, color: color || undefined, lineStyle, elevation_mm: elevation_mm === '' ? undefined : Number(elevation_mm) })} className="flex-1 py-3 bg-blue-900 text-white rounded-lg font-semibold">Gem</button>
         </div>
       </div>
     </div>
