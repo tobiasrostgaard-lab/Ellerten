@@ -841,6 +841,17 @@ export default function App() {
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const fileInputRef = useRef(null);
   const csvInputRef = useRef(null);
+  const bgWarnedRef = useRef(false);   // only warn once per session about un-persistable backgrounds
+
+  // Ask the browser for persistent storage so IndexedDB gets a larger, non-evictable
+  // quota — lets many drawings with high-res backgrounds be stored.
+  useEffect(() => {
+    try {
+      if (navigator.storage && navigator.storage.persist) {
+        navigator.storage.persisted().then(p => { if (!p) navigator.storage.persist().catch(()=>{}); }).catch(()=>{});
+      }
+    } catch (e) {}
+  }, []);
 
   const STORAGE_INDEX = 'cable_app_index';        // { projects: [{id, name}], activeId }
   const projKey = (id) => `cable_app_project_${id}`;
@@ -1011,14 +1022,19 @@ export default function App() {
   const commitDraftAndSwitch = async (draft, id) => {
     if (activeProjectId) {
       const bundle = { ...currentBundle(), nodes: draft.nodes, segments: draft.segments, cables: draft.cables, bgImage: draft.bgImage };
-      // Detect a genuine storage failure (e.g. quota) so the background isn't
-      // silently lost when leaving the tab. appStorage uses IndexedDB on Vercel.
       let ok = true;
-      try {
-        ok = await appStorage.set(projKey(activeProjectId), JSON.stringify(bundle));
-      } catch (e) { ok = false; }
+      try { ok = await appStorage.set(projKey(activeProjectId), JSON.stringify(bundle)); } catch (e) { ok = false; }
       if (!ok) {
-        try { globalThis.alert('Tegningsgrundlaget er for stort til at blive gemt (browserens lagergrænse). Prøv en mindre/komprimeret PDF, eller fjern grundlaget.'); } catch (e) {}
+        // Background too large to persist — still save the engineering data so nothing
+        // is lost. Keep the background only for this session.
+        try {
+          const slim = { ...bundle, bgImage: bundle.bgImage ? { ...bundle.bgImage, dataUrl: null, _tooBig: true } : null };
+          await appStorage.set(projKey(activeProjectId), JSON.stringify(slim));
+        } catch (e) {}
+        if (!bgWarnedRef.current) {
+          bgWarnedRef.current = true;
+          try { globalThis.alert('Tegningsgrundlaget er for stort til at gemmes permanent og bevares kun i denne session. Tegningens data (føringsveje, kabler m.m.) er gemt. Prøv evt. en mindre/komprimeret PDF.'); } catch (e) {}
+        }
       }
       applyBundle(bundle);
     }
@@ -3161,7 +3177,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
         const base = page.getViewport({ scale: 1 });
         // Render at the highest resolution that still fits the storage budget, so the
         // plan stays sharp when zooming in. Step down only if the JPEG gets too large.
-        const BUDGET = 3.6 * 1024 * 1024;                     // ~3.6 MB raw bytes
+        const BUDGET = 2.6 * 1024 * 1024;                     // ~2.6 MB raw bytes (≈2× as text in IndexedDB)
         const targets = [4400, 3600, 3000, 2400, 1900];       // long-edge px, high → low
         for (let i = 0; i < targets.length; i++) {
           const fit = Math.min(3.5, targets[i] / Math.max(base.width, base.height));
@@ -3191,7 +3207,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
         dataUrl = await new Promise((res) => {
           const im = new Image();
           im.onload = () => {
-            const BUDGET = 3.6 * 1024 * 1024;
+            const BUDGET = 2.6 * 1024 * 1024;
             const longest = Math.max(im.naturalWidth, im.naturalHeight);
             if (longest <= 4400 && raw.length * 0.75 <= BUDGET) { res(raw); return; }
             const targets = [4400, 3600, 3000, 2400, 1900];
