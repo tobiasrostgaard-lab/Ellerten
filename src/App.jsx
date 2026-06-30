@@ -547,29 +547,29 @@ function lightenColor(hex) {
   const mix = (c) => Math.round(c + (255 - c) * 0.82);
   return `#${[mix(r),mix(g),mix(b)].map(v=>v.toString(16).padStart(2,'0')).join('')}`;
 }
-function nextNodeIdByKind(nodes, kind) {
+function nextNodeIdByKind(nodes, kind, reserved) {
   const prefix = kind === 'board' ? 'Q' : kind === 'load' ? 'X' : 'N';
   const used = new Set(Object.keys(nodes));
   let n = 1;
-  while (used.has(`${prefix}${n}`)) n++;
+  while (used.has(`${prefix}${n}`) || (reserved && reserved.has(`${prefix}${n}`))) n++;
   return `${prefix}${n}`;
 }
-function nextSegId(segments) {
+function nextSegId(segments, reserved) {
   const used = new Set(Object.keys(segments));
   let n = 1;
-  while (used.has(`WC${String(n).padStart(3,'0')}`)) n++;
+  while (used.has(`WC${String(n).padStart(3,'0')}`) || (reserved && reserved.has(`WC${String(n).padStart(3,'0')}`))) n++;
   return `WC${String(n).padStart(3,'0')}`;
 }
-function nextNodeId(nodes) {
+function nextNodeId(nodes, reserved) {
   const used = new Set(Object.keys(nodes));
   let n = 1;
-  while (used.has(`N${n}`)) n++;
+  while (used.has(`N${n}`) || (reserved && reserved.has(`N${n}`))) n++;
   return `N${n}`;
 }
-function nextCableId(cables) {
+function nextCableId(cables, reserved) {
   const used = new Set(cables.map(c => c.id));
   let n = 1;
-  while (used.has(`W${String(n).padStart(3,'0')}`)) n++;
+  while (used.has(`W${String(n).padStart(3,'0')}`) || (reserved && reserved.has(`W${String(n).padStart(3,'0')}`))) n++;
   return `W${String(n).padStart(3,'0')}`;
 }
 // Shortest physical path between two nodes through the tray segments,
@@ -882,11 +882,11 @@ export default function App() {
           // Migration: check for legacy single-project state
           const legacy = await appStorage.get('cable_app_state');
           const id = genId();
-          let name = 'Mit projekt';
+          let name = 'Tegning 1';
           if (legacy) {
             const s = JSON.parse(legacy);
             applyBundle(s);
-            name = (s.project?.site ? `=${s.project.site}+${s.project.location||''}` : 'Mit projekt');
+            name = (s.project?.site ? `=${s.project.site}+${s.project.location||''}` : 'Tegning 1');
             await appStorage.set(projKey(id), legacy);
           } else {
             await appStorage.set(projKey(id), JSON.stringify(emptyBundle()));
@@ -974,7 +974,7 @@ export default function App() {
       bundle = { ...emptyBundle(), project: t.project, segments: t.segments, cables: t.cables, nodes: autoLayoutFromSegments(t.segments) };
     }
     try { await appStorage.set(projKey(id), JSON.stringify(bundle)); } catch (e) {}
-    const list = [...projectList, { id, name: name || 'Nyt projekt' }];
+    const list = [...projectList, { id, name: name || `Tegning ${projectList.length + 1}` }];
     setProjectList(list);
     setOpenTabs(t => t.includes(id) ? t : [...t, id]);
     setActiveProjectId(id);
@@ -1053,9 +1053,9 @@ export default function App() {
     try { await appStorage.set(STORAGE_INDEX, JSON.stringify({ projects: projectList, activeId: activeProjectId })); } catch (e) {}
   };
 
-  const deleteProject = async (id) => {
+  const deleteProject = async (id, skipConfirm) => {
     const proj = projectList.find(p => p.id === id);
-    if (!safeConfirm(`Slet projektet "${proj?.name ?? id}" permanent?`)) return;
+    if (!skipConfirm && !safeConfirm(`Slet projektet "${proj?.name ?? id}" permanent?`)) return;
     try { await appStorage.delete(projKey(id)); } catch (e) {}
     const remaining = projectList.filter(p => p.id !== id);
     setOpenTabs(t => t.filter(x => x !== id));
@@ -1064,7 +1064,7 @@ export default function App() {
       const newId = genId();
       const bundle = emptyBundle();
       try { await appStorage.set(projKey(newId), JSON.stringify(bundle)); } catch (e) {}
-      setProjectList([{ id: newId, name: 'Mit projekt' }]);
+      setProjectList([{ id: newId, name: 'Tegning 1' }]);
       setOpenTabs([newId]);
       setActiveProjectId(newId);
       applyBundle(bundle);
@@ -1097,6 +1097,65 @@ export default function App() {
         nextId
       );
     }
+  };
+
+  // Drag-to-reorder: move drawing tab `fromId` to the position of `toId`.
+  const reorderTabs = (fromId, toId) => {
+    setOpenTabs(tabs => {
+      const arr = [...tabs];
+      const from = arr.indexOf(fromId);
+      const to = arr.indexOf(toId);
+      if (from === -1 || to === -1 || from === to) return tabs;
+      arr.splice(from, 1);
+      arr.splice(to, 0, fromId);
+      return arr;
+    });
+  };
+
+  // --- Cross-drawing links ---
+  // Read another (stored) drawing's nodes so the user can pick a point to link to.
+  const loadDrawingNodes = async (projectId) => {
+    try {
+      const raw = await appStorage.get(projKey(projectId));
+      if (!raw) return {};
+      const b = JSON.parse(raw);
+      const ns = (b.nodes && Object.keys(b.nodes).length) ? b.nodes : autoLayoutFromSegments(b.segments || {});
+      return ns || {};
+    } catch (e) { return {}; }
+  };
+  // Apply a patch to one node inside another drawing's stored bundle (used to
+  // write the reciprocal end of a link). Active drawing is patched in-editor.
+  const patchDrawingNode = async (projectId, nodeId, patch) => {
+    try {
+      const raw = await appStorage.get(projKey(projectId));
+      const b = raw ? JSON.parse(raw) : null;
+      if (!b) return;
+      b.nodes = b.nodes || {};
+      if (!b.nodes[nodeId]) {
+        const auto = autoLayoutFromSegments(b.segments || {});
+        b.nodes[nodeId] = auto[nodeId] || { x: 100, y: 100 };
+      }
+      b.nodes[nodeId] = { ...b.nodes[nodeId], ...patch };
+      await appStorage.set(projKey(projectId), JSON.stringify(b));
+    } catch (e) {}
+  };
+
+  // Gather every element ID (nodes, segments, cables) used by all OTHER drawings,
+  // so new IDs in the current drawing can be made unique across the whole project.
+  const collectUsedIds = async (exceptId) => {
+    const set = new Set();
+    for (const p of (projectList || [])) {
+      if (p.id === exceptId) continue;
+      try {
+        const raw = await appStorage.get(projKey(p.id));
+        if (!raw) continue;
+        const b = JSON.parse(raw);
+        Object.keys(b.nodes || {}).forEach(id => set.add(id));
+        Object.keys(b.segments || {}).forEach(id => set.add(id));
+        (b.cables || []).forEach(c => { if (c && c.id) set.add(c.id); });
+      } catch (e) {}
+    }
+    return set;
   };
 
   const renameProject = (id, name) => {
@@ -1174,33 +1233,34 @@ export default function App() {
           ))}
         </nav>
         {/* Header — project identity (IEC 81346) + actions */}
-        <header className="flex items-center justify-between px-4 py-1.5 border-b border-stone-200/70 shadow-sm"
+        <header className="flex items-center gap-2 flex-wrap px-4 py-1.5 border-b border-stone-200/70 shadow-sm"
                 style={{ background:'linear-gradient(to right, #F4F2EC, #FBFAF6)', color:'#44403c' }}>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h1 className="text-sm font-bold flex items-center gap-2 text-stone-800 truncate">
               <Cable size={16} className="text-stone-600 shrink-0"/> ={project.site}+{project.location}
             </h1>
             <p className="text-[11px] text-stone-500 truncate">{cables.length} {t('unitCables')} · {Object.keys(segments).length} {t('unitTrays')}</p>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 flex-wrap justify-end shrink-0">
             {/* Language selector */}
-            <label className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors hover:brightness-95"
+            <label className="px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors hover:brightness-95"
                    style={{ backgroundColor:'#E7E2D4', color:'#44403c' }} title="Vælg sprog / Language">
               <Globe size={15}/> {t('language')}
               <select value={lang} onChange={e=>setLang(e.target.value)}
-                      className="bg-transparent outline-none cursor-pointer text-xs font-semibold" style={{ color:'#44403c' }}>
+                      className="bg-transparent outline-none cursor-pointer text-xs font-semibold max-w-[5.5rem] truncate" style={{ color:'#44403c' }}>
                 {LANGS.map(l => <option key={l.code} value={l.code}>{l.name}</option>)}
               </select>
             </label>
             <button onClick={() => exportXlsx({project, cables, segments, cableTypes, trayTypes}, A)}
-                    className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors hover:brightness-95"
+                    title={t('exportExcel')}
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors hover:brightness-95"
                     style={{ backgroundColor:'#E7E2D4', color:'#44403c' }}>
-              <FileDown size={15}/> {t('exportExcel')}
+              <FileDown size={15}/> Excel
             </button>
             {/* Back to start page — always available */}
             <button onClick={()=>setTab('project')} title="Tilbage til forsiden"
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors hover:brightness-95 ${tab==='project' ? 'opacity-50' : ''}`}
-                    style={{ backgroundColor:'#E7E2D4', color:'#44403c' }}>
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors hover:brightness-95 ${tab==='project' ? 'opacity-50' : ''}`}
+                    style={{ backgroundColor:'#D7D0BC', color:'#44403c' }}>
               <Home size={15}/> Forside
             </button>
           </div>
@@ -1222,8 +1282,8 @@ export default function App() {
 
       {editing && <EditModal editing={editing} setEditing={setEditing} cableTypes={cableTypes} trayTypes={trayTypes} transformerTypes={transformerTypes} segments={segments} setCables={setCables} setSegments={setSegments} setCableTypes={setCableTypes} setTrayTypes={setTrayTypes} setTransformerTypes={setTransformerTypes} cables={cables} />}
       {sizingOpen && <SizingModal close={() => setSizingOpen(false)} project={project} cableTypes={cableTypes} segments={segments} cables={cables} setCables={setCables} />}
-      {drawingOpen && <DrawingModal key={activeProjectId} close={() => setDrawingOpen(false)} segments={segments} setSegments={setSegments} nodes={nodes} setNodes={setNodes} trayTypes={trayTypes} cables={cables} setCables={setCables} cableTypes={cableTypes} bgImage={bgImage} setBgImage={setBgImage} project={project}
-        projectList={projectList} openTabs={openTabs} activeProjectId={activeProjectId} commitDraftAndSwitch={commitDraftAndSwitch} commitDraftAndCreate={commitDraftAndCreate} closeTab={closeTab} saveAllDrawings={saveAllDrawings} autoSave={autoSave} toggleAutoSave={toggleAutoSave} />}
+      {drawingOpen && <DrawingModal key={activeProjectId} close={() => setDrawingOpen(false)} goHome={() => { setDrawingOpen(false); setTab('project'); }} segments={segments} setSegments={setSegments} nodes={nodes} setNodes={setNodes} trayTypes={trayTypes} cables={cables} setCables={setCables} cableTypes={cableTypes} bgImage={bgImage} setBgImage={setBgImage} project={project}
+        projectList={projectList} openTabs={openTabs} activeProjectId={activeProjectId} commitDraftAndSwitch={commitDraftAndSwitch} commitDraftAndCreate={commitDraftAndCreate} closeTab={closeTab} reorderTabs={reorderTabs} loadDrawingNodes={loadDrawingNodes} patchDrawingNode={patchDrawingNode} collectUsedIds={collectUsedIds} saveAllDrawings={saveAllDrawings} autoSave={autoSave} toggleAutoSave={toggleAutoSave} />}
       {newProjectOpen && <NewProjectModal close={() => setNewProjectOpen(false)} createProject={createProject} />}
     </div>
   );
@@ -1232,6 +1292,58 @@ export default function App() {
 // =========================
 // TAB: PROJECT
 // =========================
+function LinkDialog({ fromNodeId, projects, loadDrawingNodes, onConfirm, onClose }) {
+  const [pid, setPid] = useState(projects[0]?.id || '');
+  const [nodesMap, setNodesMap] = useState({});
+  const [nid, setNid] = useState('');
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    if (!pid) { setNodesMap({}); setNid(''); return; }
+    setLoading(true);
+    loadDrawingNodes(pid).then(ns => {
+      if (!alive) return;
+      setNodesMap(ns || {});
+      setNid(Object.keys(ns || {})[0] || '');
+      setLoading(false);
+    });
+    return () => { alive = false; };
+  }, [pid]);
+  const nodeIds = Object.keys(nodesMap);
+  return (
+    <div className="fixed inset-0 bg-black/50 z-40 flex items-end lg:items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white p-4 rounded-2xl w-full lg:max-w-md" onClick={e=>e.stopPropagation()}>
+        <h3 className="font-bold mb-1 text-stone-800 flex items-center gap-2"><Link2 size={18}/> Forbind til anden tegning</h3>
+        <p className="text-xs text-stone-500 mb-3">Forbind punktet <b className="text-stone-700">{fromNodeId}</b> til et punkt på en anden tegning.</p>
+        {projects.length === 0 ? (
+          <div className="text-sm text-stone-500 py-3">Der er ingen andre tegninger at forbinde til endnu. Opret en ekstra tegning først.</div>
+        ) : (
+          <>
+            <label className="block text-xs font-semibold text-stone-600 mb-1">Tegning</label>
+            <select value={pid} onChange={e=>setPid(e.target.value)} className="w-full border border-stone-300 rounded-lg px-2 py-2 text-sm mb-3 bg-white">
+              {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <label className="block text-xs font-semibold text-stone-600 mb-1">Punkt på tegningen</label>
+            {loading ? (
+              <div className="text-sm text-stone-400 py-2 mb-3">Indlæser punkter…</div>
+            ) : nodeIds.length ? (
+              <select value={nid} onChange={e=>setNid(e.target.value)} className="w-full border border-stone-300 rounded-lg px-2 py-2 text-sm mb-3 bg-white">
+                {nodeIds.map(id => <option key={id} value={id}>{id}{nodesMap[id]?.kind ? ` (${nodesMap[id].kind})` : ''}</option>)}
+              </select>
+            ) : (
+              <div className="text-sm text-stone-400 py-2 mb-3">Ingen punkter på den valgte tegning.</div>
+            )}
+          </>
+        )}
+        <div className="flex gap-2 mt-2">
+          <button onClick={onClose} className="flex-1 py-2.5 border border-stone-300 rounded-lg font-semibold text-sm">Annuller</button>
+          <button disabled={!pid || !nid} onClick={()=>onConfirm(pid, nid)}
+                  className="flex-[2] py-2.5 rounded-lg font-semibold text-sm text-white disabled:opacity-40" style={{ backgroundColor:'#44403c' }}>Forbind</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 function NewProjectModal({ close, createProject }) {
   const [name, setName] = useState('');
   const [template, setTemplate] = useState('empty');
@@ -1256,7 +1368,7 @@ function NewProjectModal({ close, createProject }) {
         </div>
         <div className="flex gap-2 mt-4">
           <button onClick={close} className="flex-1 py-3 border border-stone-300 rounded-lg font-semibold">Annuller</button>
-          <button onClick={()=>createProject(name.trim() || 'Nyt projekt', template)} className="flex-[2] py-3 bg-stone-800 text-white rounded-lg font-semibold">Opret projekt</button>
+          <button onClick={()=>createProject(name.trim(), template)} className="flex-[2] py-3 bg-stone-800 text-white rounded-lg font-semibold">Opret tegning</button>
         </div>
       </div>
     </div>
@@ -1265,6 +1377,7 @@ function NewProjectModal({ close, createProject }) {
 
 function ProjectTab({ project, setProject, counts, critical, tight, loadTemplate, clearAll, transformerTypes, exportProjectJSON, fileInputRef, projectList, activeProjectId, switchProject, deleteProject, renameProject, openNewProject, setTab, setDrawingOpen, t }) {
   const update = (k, v) => setProject({ ...project, [k]: v });
+  const [confirmDel, setConfirmDel] = useState(null);   // project id pending delete-confirmation
   const linkedT = project.transformer ? transformerTypes[project.transformer] : null;
   const activeName = projectList?.find(p => p.id === activeProjectId)?.name ?? '';
   return (
@@ -1288,7 +1401,19 @@ function ProjectTab({ project, setProject, counts, critical, tight, loadTemplate
                 />
                 {p.id===activeProjectId && <span className="text-[10px] bg-stone-700 text-white px-1.5 py-0.5 rounded font-semibold">aktiv</span>}
               </button>
-              <button onClick={()=>deleteProject(p.id)} className="p-1.5 text-stone-400 hover:text-stone-700 hover:bg-stone-100 rounded transition-colors" title="Slet projekt"><Trash2 size={15}/></button>
+              {confirmDel === p.id ? (
+                <div className="flex items-center gap-1 shrink-0">
+                  <span className="text-[11px] text-stone-500 mr-1">Slet?</span>
+                  <button onClick={()=>{ deleteProject(p.id, true); setConfirmDel(null); }}
+                          className="px-2 py-1 rounded-md text-xs font-semibold bg-red-600 text-white hover:bg-red-700"
+                          title="Bekræft sletning">Ja</button>
+                  <button onClick={()=>setConfirmDel(null)}
+                          className="px-2 py-1 rounded-md text-xs font-semibold bg-stone-200 text-stone-700 hover:bg-stone-300"
+                          title="Annullér">Nej</button>
+                </div>
+              ) : (
+                <button onClick={()=>setConfirmDel(p.id)} className="p-1.5 text-stone-400 hover:text-stone-700 hover:bg-stone-100 rounded transition-colors shrink-0" title="Slet projekt"><Trash2 size={15}/></button>
+              )}
             </div>
           ))}
           {(projectList || []).length === 0 && (
@@ -1967,7 +2092,7 @@ function AnalysisTab({ cables, A, cableTypes, segments }) {
 // =========================
 // DRAWING MODAL — interactive cable tray layout editor
 // =========================
-function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project, projectList, openTabs, activeProjectId, commitDraftAndSwitch, commitDraftAndCreate, closeTab, saveAllDrawings, autoSave, toggleAutoSave }) {
+function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project, projectList, openTabs, activeProjectId, commitDraftAndSwitch, commitDraftAndCreate, closeTab, reorderTabs, loadDrawingNodes, patchDrawingNode, collectUsedIds, saveAllDrawings, autoSave, toggleAutoSave }) {
   // local working state
   // Node shape: { x, y, kind: 'junction'|'board'|'load', ...meta }
   //   board meta: { board_type, In_main }
@@ -2014,6 +2139,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const [collapsedBars, setCollapsedBars] = useState({});     // per-bar collapse: { header, category, nav, options }
   const [ctxMenu, setCtxMenu] = useState(null);               // right-click context menu {x,y} in screen px
   const [ctxSub, setCtxSub] = useState(null);                 // which submenu is hovered open
+  const [ctxSub2, setCtxSub2] = useState(null);               // second-level submenu (e.g. tray shapes under Føringsveje)
   const [catEdit, setCatEdit] = useState(null);               // network id whose objects are being edited
   // Background images keep no lock flag — placed objects always stay fixed at
   // their world position regardless of how the background is scaled or moved.
@@ -2076,6 +2202,10 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const selectedNodesRef = useRef([]);                       // synchronous mirror for pointer handlers
   const [marquee, setMarquee] = useState(null);              // {x0,y0,x1,y1} in world coords while dragging
   const marqueeRef = useRef(null);                           // synchronous marquee state
+  const dragTabRef = useRef(null);                           // id of the drawing tab being dragged
+  const reservedIdsRef = useRef(new Set());                  // element IDs used by OTHER drawings (keep new IDs unique)
+  const [dragOverTab, setDragOverTab] = useState(null);      // id of tab currently hovered during a drag
+  const [linkDialog, setLinkDialog] = useState(null);        // { nodeId } when linking a node to another drawing
   const [multiEdit, setMultiEdit] = useState(null);         // { kind } when editing multiple
   const [editSeg, setEditSeg] = useState(null);       // segment being edited (dialog open)
   const [selectedSeg, setSelectedSeg] = useState(null);  // segment selected (shows bend handles)
@@ -2511,7 +2641,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       return;
     }
     if (mode === 'junction' || mode === 'board' || mode === 'load') {
-      const id = nextNodeIdByKind(lNodes, mode);
+      const id = genNodeId(mode);
       const base = { x: Math.round(p.x), y: Math.round(p.y), kind: mode };
       if (mode === 'board') { base.board_type = 'Sub-board'; base.In_main = 0; base.size = 14; }
       if (mode === 'load') { base.function = 'Socket circuit'; base.V = 230; base.phases = 1; base.Ib = 0; base.In = 0; base.cos_phi = 0.9; base.size = 14; }
@@ -2902,7 +3032,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   };
 
   const confirmPending = () => {
-    const segId = nextSegId(lSegs);
+    const segId = genSegId();
     const newSegs = { ...lSegs, [segId]: { from: pending.from, to: pending.to, length_m: Number(pending.length_m), tray_type: pending.tray_type } };
     setLSegs(newSegs);
     // If this connects a board to a load (either direction), auto-create a cable
@@ -2914,7 +3044,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     else if (bKind === 'board' && aKind === 'load') { boardId = pending.to; loadId = pending.from; loadNode = a; }
     if (boardId && loadId) {
       const route = findRoute(newSegs, boardId, loadId);
-      const cid = nextCableId(lCables);
+      const cid = genCableId();
       setLCables([...lCables, {
         id: cid, from: boardId, to: loadId,
         function: loadNode.function || 'Socket circuit',
@@ -2930,7 +3060,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   };
 
   const confirmPendingCable = () => {
-    const id = nextCableId(lCables);
+    const id = genCableId();
     setLCables([...lCables, {
       id, from: pendingCable.from, to: pendingCable.to,
       function: pendingCable.cable_function,
@@ -3331,6 +3461,55 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     setEditNode(null);
   };
   const updateNode = (id, data) => { setLNodes({ ...lNodes, [id]: { ...lNodes[id], ...data } }); };
+
+  // --- Cross-drawing links ---
+  // Link node `aId` (this drawing) to node `bId` on drawing `bPid`. Writes both ends.
+  const createLink = async (aId, bPid, bId) => {
+    const bName = (projectList || []).find(p => p.id === bPid)?.name || 'Tegning';
+    const aName = (projectList || []).find(p => p.id === activeProjectId)?.name || 'Tegning';
+    // This drawing's end (live state)
+    setLNodes(prev => ({ ...prev, [aId]: { ...prev[aId], link: { pid: bPid, nid: bId, name: bName } } }));
+    // Reciprocal end on the other drawing (in storage)
+    if (patchDrawingNode) {
+      try { await patchDrawingNode(bPid, bId, { link: { pid: activeProjectId, nid: aId, name: aName } }); } catch (e) {}
+    }
+    // Persist this drawing too so the link survives immediately
+    try { saveAllDrawings && saveAllDrawings({ ...draftSnapshot(), nodes: { ...lNodes, [aId]: { ...lNodes[aId], link: { pid: bPid, nid: bId, name: bName } } } }); } catch (e) {}
+    setLinkDialog(null);
+  };
+  // Remove a link from node `aId` and clear the reciprocal end.
+  const removeLink = async (aId) => {
+    const lk = lNodes[aId]?.link;
+    setLNodes(prev => { const n = { ...prev[aId] }; delete n.link; return { ...prev, [aId]: n }; });
+    if (lk && patchDrawingNode) {
+      try { await patchDrawingNode(lk.pid, lk.nid, { link: undefined }); } catch (e) {}
+    }
+  };
+  // Jump to a node's linked drawing (opens it as a tab and activates it).
+  const goToLink = (lk) => { if (lk && lk.pid) switchToTab(lk.pid); };
+
+  // Context-menu helper: start adding a specific føringsvej option (shape or segment)
+  // WITHOUT opening the "Tilføj:" options bar — the mode is set so you can place/draw directly.
+  const ctxPickTray = (opt) => {
+    selectAddCategory('trays');
+    if (opt === 'segment') { setMode('connect'); setConnectFrom(null); }
+    else { setJunctionShape(opt); setMode('junction'); }
+    setAddPanel(false); setHideChrome(false);
+    setCtxMenu(null); setCtxSub(null); setCtxSub2(null);
+  };
+
+  // Collect IDs used by the other drawings so new elements here stay unique project-wide.
+  useEffect(() => {
+    let alive = true;
+    if (collectUsedIds) {
+      collectUsedIds(activeProjectId).then(s => { if (alive) reservedIdsRef.current = s || new Set(); });
+    }
+    return () => { alive = false; };
+  }, [activeProjectId]);
+  // ID generators that avoid both this drawing's IDs and those reserved by other drawings.
+  const genNodeId = (kind) => nextNodeIdByKind(lNodes, kind, reservedIdsRef.current);
+  const genSegId = () => nextSegId(lSegs, reservedIdsRef.current);
+  const genCableId = () => nextCableId(lCables, reservedIdsRef.current);
   const updateSeg = (id, data) => {
     setLSegs(prev => {
       const next = { ...prev, [id]: { ...prev[id], ...data } };
@@ -3403,8 +3582,15 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
             if (!p) return null;
             return (
               <div key={p.id} onClick={()=>switchToTab(p.id)}
-                   className={`group pl-3 pr-2 py-1 text-xs whitespace-nowrap border-r border-stone-300/50 flex items-center gap-1.5 cursor-pointer rounded-t-lg ${p.id===activeProjectId ? 'font-semibold' : 'text-stone-600 hover:bg-white/40'}`}
-                   style={p.id===activeProjectId ? { backgroundColor: '#D7D0BC', color: '#44403c' } : undefined}>
+                   draggable
+                   onDragStart={(e)=>{ dragTabRef.current = p.id; e.dataTransfer.effectAllowed='move'; try { e.dataTransfer.setData('text/plain', p.id); } catch(err){} }}
+                   onDragOver={(e)=>{ if (dragTabRef.current && dragTabRef.current !== p.id) { e.preventDefault(); e.dataTransfer.dropEffect='move'; if (dragOverTab !== p.id) setDragOverTab(p.id); } }}
+                   onDragLeave={()=>{ if (dragOverTab === p.id) setDragOverTab(null); }}
+                   onDrop={(e)=>{ e.preventDefault(); const from = dragTabRef.current; if (from && from !== p.id) reorderTabs && reorderTabs(from, p.id); dragTabRef.current=null; setDragOverTab(null); }}
+                   onDragEnd={()=>{ dragTabRef.current=null; setDragOverTab(null); }}
+                   className={`group pl-3 pr-2 py-1 text-xs whitespace-nowrap border-r border-stone-300/50 flex items-center gap-1.5 cursor-grab active:cursor-grabbing rounded-t-lg ${dragOverTab===p.id ? 'ring-2 ring-stone-400' : ''} ${p.id===activeProjectId ? 'font-semibold' : 'text-stone-600 hover:bg-white/40'}`}
+                   style={p.id===activeProjectId ? { backgroundColor: '#D7D0BC', color: '#44403c' } : undefined}
+                   title="Træk for at ændre rækkefølgen">
                 <Pencil size={11}/> {p.name}
                 {openTabs.length > 1 && (
                   <button onClick={(e)=>onCloseTab(e, p.id)} title="Luk fane (sletter ikke tegningen)"
@@ -3418,6 +3604,13 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
           <button onClick={newTab} title="Ny tegning"
                   className="px-3 py-1 text-xs text-stone-600 hover:bg-white/50 flex items-center gap-1 shrink-0">
             <Plus size={13}/> Ny
+          </button>
+          {/* Back to start page — saves, closes the editor, opens the home page */}
+          <button onClick={()=>{ try { saveAllDrawings && saveAllDrawings(draftSnapshot()); } catch(e){} goHome ? goHome() : close(); }}
+                  className="ml-auto my-0.5 mr-1 px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 shrink-0 transition-colors hover:brightness-95"
+                  style={{ backgroundColor:'#D7D0BC', color:'#44403c' }}
+                  title="Gem og gå til forsiden">
+            <Home size={13}/> Forside
           </button>
         </div>
         )
@@ -3726,7 +3919,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
              className="w-full h-full"
              style={{ cursor: 'crosshair', touchAction:'none', userSelect:'none', WebkitUserSelect:'none', MozUserSelect:'none' }}
              onClick={onCanvasTap}
-             onContextMenu={(e)=>{ e.preventDefault(); if (!movedRef.current) { setCtxSub(null); setCtxMenu({ x: e.clientX, y: e.clientY }); } }}
+             onContextMenu={(e)=>{ e.preventDefault(); if (!movedRef.current) { setCtxSub(null); setCtxSub2(null); setCtxMenu({ x: e.clientX, y: e.clientY }); } }}
              onPointerDown={onCanvasPointerDown}
              onPointerMove={onCanvasPointerMove}
              onPointerUp={onCanvasPointerUp}
@@ -4056,6 +4249,23 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
               </g>
             );
           })}
+
+          {/* Cross-drawing link badges — click to jump to the linked drawing */}
+          {Object.entries(lNodes).filter(([id, p]) => p && p.link).map(([id, p]) => {
+            const lk = p.link;
+            const label = `⛓ ${lk.name}`;
+            const w = 12 + label.length * 6;
+            const bx = p.x + 12, by = p.y - 30;
+            return (
+              <g key={'link-'+id} style={{ cursor:'pointer' }}
+                 onPointerDown={(e)=>e.stopPropagation()}
+                 onClick={(e)=>{ e.stopPropagation(); goToLink(lk); }}>
+                <line x1={p.x} y1={p.y} x2={bx+6} y2={by+16} stroke="#44403c" strokeWidth="1" strokeDasharray="2,2" opacity="0.5"/>
+                <rect x={bx} y={by} width={w} height={16} rx={5} fill="#44403c" opacity="0.95"/>
+                <text x={bx+6} y={by+11} fontSize="9" fontWeight="bold" fill="#fff" style={{ userSelect:'none' }}>{label}</text>
+              </g>
+            );
+          })}
         </svg>
 
         {/* Empty state — hidden as soon as any object is placed */}
@@ -4198,6 +4408,11 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
 
       {/* Edit segment dialog */}
       {editSeg && <SegEditDialog id={editSeg} setId={setEditSeg} lSegs={lSegs} trayTypes={trayTypes} updateSeg={updateSeg} deleteSeg={deleteSeg} addWaypoint={addWaypoint} removeWaypoint={removeWaypoint} straightenOne={straightenOne}/>}
+      {linkDialog && <LinkDialog fromNodeId={linkDialog.nodeId}
+                                 projects={(projectList||[]).filter(p => p.id !== activeProjectId)}
+                                 loadDrawingNodes={loadDrawingNodes}
+                                 onConfirm={(pid, nid)=>createLink(linkDialog.nodeId, pid, nid)}
+                                 onClose={()=>setLinkDialog(null)}/>}
       {catEdit && networkInfo.byId[catEdit] && (
         <CategoryEditModal
           net={networkInfo.byId[catEdit]}
@@ -4223,10 +4438,11 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         const top = Math.min(ctxMenu.y, H - 430);
         const subLeft = (left + menuW + 210 > W);  // open submenus to the left if tight
         const subCls = `absolute ${subLeft ? 'right-full mr-1' : 'left-full ml-1'} top-0 bg-white rounded-xl shadow-2xl ring-1 ring-black/5 border border-stone-100 py-1.5 w-52 overflow-hidden`;
+        const subClsOpen = `absolute ${subLeft ? 'right-full mr-1' : 'left-full ml-1'} top-0 bg-white rounded-xl shadow-2xl ring-1 ring-black/5 border border-stone-100 py-1.5 w-52 overflow-visible`;
         const item = "w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-stone-100 active:bg-stone-200 transition-colors";
         return (
         <>
-          <div className="fixed inset-0 z-30" onClick={()=>{ setCtxMenu(null); setCtxSub(null); }} onContextMenu={(e)=>{ e.preventDefault(); setCtxMenu(null); setCtxSub(null); }}/>
+          <div className="fixed inset-0 z-30" onClick={()=>{ setCtxMenu(null); setCtxSub(null); setCtxSub2(null); }} onContextMenu={(e)=>{ e.preventDefault(); setCtxMenu(null); setCtxSub(null); setCtxSub2(null); }}/>
           <div className="fixed z-40 bg-white rounded-xl shadow-2xl ring-1 ring-black/5 border border-stone-100 py-1.5 text-sm w-62 overflow-visible"
                style={{ left, top, width: menuW }}
                onClick={e=>e.stopPropagation()} onContextMenu={e=>{ e.preventDefault(); e.stopPropagation(); }}>
@@ -4245,18 +4461,57 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
               </>
             )}
 
+            {/* Link a single node to a point on another drawing */}
+            {selectedNodes.length === 1 && (
+              <>
+                <button onClick={()=>{ setLinkDialog({ nodeId: selectedNodes[0] }); setCtxMenu(null); }} onMouseEnter={()=>setCtxSub(null)}
+                        className={item}><Link2 size={15} className="text-stone-700"/> Forbind til anden tegning</button>
+                {lNodes[selectedNodes[0]]?.link && (
+                  <button onClick={()=>{ removeLink(selectedNodes[0]); setCtxMenu(null); }} onMouseEnter={()=>setCtxSub(null)}
+                          className={item}><X size={15} className="text-stone-500"/> Fjern link ({lNodes[selectedNodes[0]].link.name})</button>
+                )}
+                <div className="border-t border-stone-100 my-1.5 mx-2"></div>
+              </>
+            )}
+
             {/* Tilføj nyt objekt → submenu of categories */}
-            <div className="relative" onMouseEnter={()=>setCtxSub('add')}>
+            <div className="relative" onMouseEnter={()=>{ setCtxSub('add'); setCtxSub2(null); }}>
               <button className={`${item} justify-between ${ctxSub==='add'?'bg-stone-100':''}`}>
                 <span className="flex items-center gap-2.5"><Plus size={15} className="text-stone-700"/> Tilføj nyt objekt</span>
                 <ChevronRight size={14} className="text-stone-400"/>
               </button>
               {ctxSub==='add' && (
-                <div className={subCls}>
-                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('trays'); setHideChrome(false); setCtxMenu(null); }} className={item}><GitBranch size={15} className="text-stone-700"/> Føringsveje</button>
-                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('boards'); setHideChrome(false); setCtxMenu(null); }} className={item}><Database size={15} className="text-stone-700"/> Tavler</button>
-                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('loads'); setHideChrome(false); setCtxMenu(null); }} className={item}><Zap size={15} className="text-stone-700"/> Laster</button>
-                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('cables'); setHideChrome(false); setCtxMenu(null); }} className={item}><Cable size={15} className="text-stone-700"/> Kabler</button>
+                <div className={subClsOpen}>
+                  {/* Føringsveje → nested submenu of segment options */}
+                  <div className="relative" onMouseEnter={()=>setCtxSub2('trays')}>
+                    <button className={`${item} justify-between ${ctxSub2==='trays'?'bg-stone-100':''}`}>
+                      <span className="flex items-center gap-2.5"><GitBranch size={15} className="text-stone-700"/> Føringsveje</span>
+                      <ChevronRight size={14} className="text-stone-400"/>
+                    </button>
+                    {ctxSub2==='trays' && (
+                      <div className={subCls}>
+                        <button onClick={()=>ctxPickTray('dot')} className={item}>
+                          <svg width="16" height="16" viewBox="0 0 22 22"><circle cx="11" cy="11" r="6" fill="#fff" stroke="#8a7f63" strokeWidth="2"/></svg> Punkt
+                        </button>
+                        <button onClick={()=>ctxPickTray('tee')} className={item}>
+                          <svg width="16" height="16" viewBox="0 0 22 22"><line x1="3" y1="8" x2="19" y2="8" stroke="#8a7f63" strokeWidth="2.5" strokeLinecap="round"/><line x1="11" y1="8" x2="11" y2="19" stroke="#8a7f63" strokeWidth="2.5" strokeLinecap="round"/></svg> T-stykke
+                        </button>
+                        <button onClick={()=>ctxPickTray('corner')} className={item}>
+                          <svg width="16" height="16" viewBox="0 0 22 22"><polyline points="5,4 5,15 16,15" fill="none" stroke="#8a7f63" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg> Hjørne
+                        </button>
+                        <button onClick={()=>ctxPickTray('cross')} className={item}>
+                          <svg width="16" height="16" viewBox="0 0 22 22"><line x1="3" y1="11" x2="19" y2="11" stroke="#8a7f63" strokeWidth="2.5" strokeLinecap="round"/><line x1="11" y1="3" x2="11" y2="19" stroke="#8a7f63" strokeWidth="2.5" strokeLinecap="round"/></svg> Kryds
+                        </button>
+                        <div className="border-t border-stone-100 my-1 mx-2"></div>
+                        <button onClick={()=>ctxPickTray('segment')} className={item}>
+                          <Link2 size={15} className="text-stone-700"/> Tilføj føringsvejssegment
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('boards'); setHideChrome(false); setCtxMenu(null); }} onMouseEnter={()=>setCtxSub2(null)} className={item}><Database size={15} className="text-stone-700"/> Tavler</button>
+                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('loads'); setHideChrome(false); setCtxMenu(null); }} onMouseEnter={()=>setCtxSub2(null)} className={item}><Zap size={15} className="text-stone-700"/> Laster</button>
+                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('cables'); setHideChrome(false); setCtxMenu(null); }} onMouseEnter={()=>setCtxSub2(null)} className={item}><Cable size={15} className="text-stone-700"/> Kabler</button>
                 </div>
               )}
             </div>
