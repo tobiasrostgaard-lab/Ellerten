@@ -12,7 +12,7 @@ const appStorage = {
     return (r && r.value) ? r.value : null;
   },
   async set(key, value) {
-    return window.storage.set(key, value);
+    try { await window.storage.set(key, value); return true; } catch (e) { return false; }
   },
   async delete(key) {
     return window.storage.delete(key);
@@ -1003,17 +1003,14 @@ export default function App() {
   const commitDraftAndSwitch = async (draft, id) => {
     if (activeProjectId) {
       const bundle = { ...currentBundle(), nodes: draft.nodes, segments: draft.segments, cables: draft.cables, bgImage: draft.bgImage };
-      // Detect storage-quota failures (e.g. a very large PDF background) so the
-      // background isn't silently lost when leaving the tab.
+      // Detect a genuine storage failure (e.g. quota) so the background isn't
+      // silently lost when leaving the tab. appStorage uses IndexedDB on Vercel.
       let ok = true;
       try {
-        const json = JSON.stringify(bundle);
-        try { globalThis.localStorage.setItem(projKey(activeProjectId), json); }
-        catch (quotaErr) { ok = false; }
-        await appStorage.set(projKey(activeProjectId), json);
+        ok = await appStorage.set(projKey(activeProjectId), JSON.stringify(bundle));
       } catch (e) { ok = false; }
       if (!ok) {
-        try { globalThis.alert('Tegningsgrundlaget er for stort til at blive gemt i denne fane (browserens lagergrænse). Prøv en mindre/komprimeret PDF, eller fjern grundlaget før du skifter fane.'); } catch (e) {}
+        try { globalThis.alert('Tegningsgrundlaget er for stort til at blive gemt (browserens lagergrænse). Prøv en mindre/komprimeret PDF, eller fjern grundlaget.'); } catch (e) {}
       }
       applyBundle(bundle);
     }
