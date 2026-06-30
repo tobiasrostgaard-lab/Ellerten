@@ -1909,6 +1909,27 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
 
   // Canvas pointer down — track pointers, start pan (1 finger) or gesture (2 fingers)
   const onCanvasPointerDown = (e) => {
+    // Right mouse button → pan the drawing in any mode (held-down drag)
+    if (e.button === 2) {
+      e.preventDefault();
+      const svg = svgRef.current;
+      try { svg?.setPointerCapture?.(e.pointerId); } catch (err) {}
+      const r = svg.getBoundingClientRect();
+      const scale = Math.min(r.width / bounds.w, r.height / bounds.h) || 1;
+      const worldPerPx = scale > 0 ? 1 / scale : 1;
+      panInfoRef.current = {
+        startClientX: e.clientX, startClientY: e.clientY,
+        startView: { ...bounds },
+        worldPerPxX: worldPerPx, worldPerPxY: worldPerPx,
+        pointerId: e.pointerId, rightClick: true,
+      };
+      // cancel any other in-progress interaction
+      dragInfoRef.current = null;
+      marqueeRef.current = null; setMarquee(null);
+      movedRef.current = false;
+      return;
+    }
+
     // Track every pointer for multi-touch
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -3220,6 +3241,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
              className="w-full h-full"
              style={{ cursor: mode==='pan' ? 'grab' : 'crosshair', touchAction:'none' }}
              onClick={onCanvasTap}
+             onContextMenu={(e)=>e.preventDefault()}
              onPointerDown={onCanvasPointerDown}
              onPointerMove={onCanvasPointerMove}
              onPointerUp={onCanvasPointerUp}
