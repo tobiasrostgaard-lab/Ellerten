@@ -904,6 +904,39 @@ export default function App() {
     setTab('project');
   };
 
+  // Save a draft from the drawing editor (nodes/segs/cables/bg) into the active
+  // project's storage, then switch to another project. Used by the drawing tabs so
+  // unsaved edits aren't lost when switching between open drawings.
+  const commitDraftAndSwitch = async (draft, id) => {
+    if (activeProjectId) {
+      const bundle = { ...currentBundle(), nodes: draft.nodes, segments: draft.segments, cables: draft.cables, bgImage: draft.bgImage };
+      try { await appStorage.set(projKey(activeProjectId), JSON.stringify(bundle)); } catch (e) {}
+      // also push into live app state so it's consistent if we return
+      applyBundle(bundle);
+    }
+    if (id && id !== activeProjectId) {
+      try {
+        const pRaw = await appStorage.get(projKey(id));
+        applyBundle(pRaw ? JSON.parse(pRaw) : emptyBundle());
+      } catch (e) { applyBundle(emptyBundle()); }
+      setActiveProjectId(id);
+    }
+  };
+
+  // Create a new drawing and switch to it, preserving the current draft first.
+  const commitDraftAndCreate = async (draft, name) => {
+    if (activeProjectId) {
+      const bundle = { ...currentBundle(), nodes: draft.nodes, segments: draft.segments, cables: draft.cables, bgImage: draft.bgImage };
+      try { await appStorage.set(projKey(activeProjectId), JSON.stringify(bundle)); } catch (e) {}
+    }
+    const id = genId();
+    const fresh = emptyBundle();
+    try { await appStorage.set(projKey(id), JSON.stringify(fresh)); } catch (e) {}
+    setProjectList([...projectList, { id, name: name || `Tegning ${projectList.length + 1}` }]);
+    setActiveProjectId(id);
+    applyBundle(fresh);
+  };
+
   const deleteProject = async (id) => {
     const proj = projectList.find(p => p.id === id);
     if (!safeConfirm(`Slet projektet "${proj?.name ?? id}" permanent?`)) return;
@@ -1032,7 +1065,8 @@ export default function App() {
 
       {editing && <EditModal editing={editing} setEditing={setEditing} cableTypes={cableTypes} trayTypes={trayTypes} transformerTypes={transformerTypes} segments={segments} setCables={setCables} setSegments={setSegments} setCableTypes={setCableTypes} setTrayTypes={setTrayTypes} setTransformerTypes={setTransformerTypes} cables={cables} />}
       {sizingOpen && <SizingModal close={() => setSizingOpen(false)} project={project} cableTypes={cableTypes} segments={segments} cables={cables} setCables={setCables} />}
-      {drawingOpen && <DrawingModal close={() => setDrawingOpen(false)} segments={segments} setSegments={setSegments} nodes={nodes} setNodes={setNodes} trayTypes={trayTypes} cables={cables} setCables={setCables} cableTypes={cableTypes} bgImage={bgImage} setBgImage={setBgImage} project={project} />}
+      {drawingOpen && <DrawingModal key={activeProjectId} close={() => setDrawingOpen(false)} segments={segments} setSegments={setSegments} nodes={nodes} setNodes={setNodes} trayTypes={trayTypes} cables={cables} setCables={setCables} cableTypes={cableTypes} bgImage={bgImage} setBgImage={setBgImage} project={project}
+        projectList={projectList} activeProjectId={activeProjectId} commitDraftAndSwitch={commitDraftAndSwitch} commitDraftAndCreate={commitDraftAndCreate} />}
       {newProjectOpen && <NewProjectModal close={() => setNewProjectOpen(false)} createProject={createProject} />}
     </div>
   );
@@ -1741,7 +1775,7 @@ function AnalysisTab({ cables, A, cableTypes, segments }) {
 // =========================
 // DRAWING MODAL — interactive cable tray layout editor
 // =========================
-function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project }) {
+function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project, projectList, activeProjectId, commitDraftAndSwitch, commitDraftAndCreate }) {
   // local working state
   // Node shape: { x, y, kind: 'junction'|'board'|'load', ...meta }
   //   board meta: { board_type, In_main }
@@ -1796,6 +1830,8 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const [editNode, setEditNode] = useState(null);
   const [selectedNodes, setSelectedNodes] = useState([]);   // multi-select (same kind only)
   const selectedNodesRef = useRef([]);                       // synchronous mirror for pointer handlers
+  const [marquee, setMarquee] = useState(null);              // {x0,y0,x1,y1} in world coords while dragging
+  const marqueeRef = useRef(null);                           // synchronous marquee state
   const [multiEdit, setMultiEdit] = useState(null);         // { kind } when editing multiple
   const [editSeg, setEditSeg] = useState(null);       // segment being edited (dialog open)
   const [selectedSeg, setSelectedSeg] = useState(null);  // segment selected (shows bend handles)
@@ -1896,6 +1932,17 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     }
     if (pointersRef.current.size > 2) return;
 
+    // Single finger in select mode → start a rubber-band marquee
+    if (mode === 'select') {
+      const svg = svgRef.current;
+      try { svg?.setPointerCapture?.(e.pointerId); } catch (err) {}
+      const p = getPoint(e);
+      marqueeRef.current = { x0: p.x, y0: p.y, x1: p.x, y1: p.y, pointerId: e.pointerId, additive: e.shiftKey };
+      setMarquee({ ...marqueeRef.current });
+      movedRef.current = false;
+      return;
+    }
+
     // Single finger in pan mode → start a pan
     if (mode !== 'pan') return;
     if (e.target.tagName === 'circle' || e.target.tagName === 'rect' || e.target.tagName === 'polygon') return;
@@ -1921,7 +1968,9 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     setConnectFrom(null);
     setCableFrom(null);
     setCableMsg(null);
-    if (m !== 'edit') { selectedNodesRef.current = []; setSelectedNodes([]); setSelectedSeg(null); }
+    marqueeRef.current = null; setMarquee(null);
+    // Keep the selection when moving between edit and select; clear it otherwise
+    if (m !== 'edit' && m !== 'select') { selectedNodesRef.current = []; setSelectedNodes([]); setSelectedSeg(null); }
   };
 
   // Multi-select: add/remove a node, but only within one category (kind).
@@ -2301,6 +2350,15 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     }
 
+    // Rubber-band marquee selection
+    if (marqueeRef.current && marqueeRef.current.pointerId === e.pointerId) {
+      const p = getPoint(e);
+      marqueeRef.current = { ...marqueeRef.current, x1: p.x, y1: p.y };
+      setMarquee({ ...marqueeRef.current });
+      movedRef.current = true;
+      return;
+    }
+
     // Two-finger gesture: pinch-zoom + pan (highest priority)
     const g = gestureRef.current;
     if (g && pointersRef.current.size >= 2) {
@@ -2395,6 +2453,41 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   };
   const onCanvasPointerUp = (e) => {
     const svg = svgRef.current;
+    // Finish a rubber-band marquee: select all same-category nodes inside the box
+    if (marqueeRef.current && marqueeRef.current.pointerId === e.pointerId) {
+      const m = marqueeRef.current;
+      marqueeRef.current = null;
+      setMarquee(null);
+      try { svg?.releasePointerCapture?.(e.pointerId); } catch (err) {}
+      pointersRef.current.delete(e.pointerId);
+      const xMin = Math.min(m.x0, m.x1), xMax = Math.max(m.x0, m.x1);
+      const yMin = Math.min(m.y0, m.y1), yMax = Math.max(m.y0, m.y1);
+      // tiny box = treat as a click that clears selection
+      if (Math.abs(xMax - xMin) < 4 && Math.abs(yMax - yMin) < 4) {
+        if (!m.additive) { selectedNodesRef.current = []; setSelectedNodes([]); }
+        return;
+      }
+      // gather nodes inside the box
+      const inside = Object.entries(lNodes)
+        .filter(([id, n]) => n.x >= xMin && n.x <= xMax && n.y >= yMin && n.y <= yMax)
+        .map(([id]) => id);
+      // enforce single-category rule: pick the most common kind in the box
+      const start = m.additive ? selectedNodesRef.current.slice() : [];
+      const baseKind = start.length ? (lNodes[start[0]]?.kind || 'junction') : null;
+      let result = start;
+      const counts = {};
+      inside.forEach(id => { const k = lNodes[id]?.kind || 'junction'; counts[k] = (counts[k]||0)+1; });
+      const dominantKind = baseKind || Object.entries(counts).sort((a,b)=>b[1]-a[1])[0]?.[0];
+      if (dominantKind) {
+        inside.forEach(id => {
+          const k = lNodes[id]?.kind || 'junction';
+          if (k === dominantKind && !result.includes(id)) result.push(id);
+        });
+      }
+      selectedNodesRef.current = result;
+      setSelectedNodes(result);
+      return;
+    }
     // Remove this pointer from tracking
     pointersRef.current.delete(e.pointerId);
     // End gesture when fewer than 2 fingers remain
@@ -2517,6 +2610,21 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     setNodes(lNodes); setSegments(lSegs); setCables(lCables);
     setBgImage(lBg ? { ...lBg, locked: bgLocked } : null);
     close();
+  };
+
+  // ---- Drawing tabs: switch between open drawings without losing edits ----
+  const draftSnapshot = () => ({
+    nodes: lNodes, segments: lSegs, cables: lCables,
+    bgImage: lBg ? { ...lBg, locked: bgLocked } : null,
+  });
+  const switchToTab = (id) => {
+    if (id === activeProjectId) return;
+    commitDraftAndSwitch?.(draftSnapshot(), id);
+    // DrawingModal is keyed by activeProjectId at the app level, so it remounts
+    // with the newly-loaded drawing's data automatically.
+  };
+  const newTab = () => {
+    commitDraftAndCreate?.(draftSnapshot());
   };
 
   // ---- Background image (PDF / image) handling ----
@@ -2847,9 +2955,30 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
           <button onClick={()=>setHideChrome(h=>!h)} className="px-2 py-1.5 rounded text-xs bg-blue-800/60 active:bg-blue-800 flex items-center gap-1" title="Skjul/vis paneler for mere plads">
             {hideChrome ? <ChevronRight size={14}/> : <X size={14}/>} {hideChrome ? 'Vis' : 'Skjul'}
           </button>
+          <button onClick={()=>{ setHideChrome(false); setBgPanel(p=>!p); }}
+                  className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${bgPanel ? 'bg-emerald-500 text-white' : 'bg-blue-800/60 active:bg-blue-800'}`}
+                  title="Juster tegningsgrundlag (plantegning som baggrund)">
+            <FileText size={14}/> Juster tegningsgrundlag
+          </button>
           <button onClick={save} className="bg-white text-blue-900 px-3 py-1.5 rounded-lg font-semibold text-sm flex items-center gap-1"><Save size={14}/> Gem</button>
         </div>
       </header>
+
+      {/* Drawing tabs — switch between open drawings (saves edits automatically) */}
+      {projectList && projectList.length >= 1 && (
+        <div className="bg-blue-800 flex items-stretch overflow-x-auto border-b border-blue-900" style={{ scrollbarWidth:'thin' }}>
+          {projectList.map(p => (
+            <button key={p.id} onClick={()=>switchToTab(p.id)}
+                    className={`px-3 py-2 text-xs whitespace-nowrap border-r border-blue-900/50 flex items-center gap-1.5 ${p.id===activeProjectId ? 'bg-white text-blue-900 font-semibold' : 'text-blue-100 hover:bg-blue-700'}`}>
+              <Pencil size={11}/> {p.name}
+            </button>
+          ))}
+          <button onClick={newTab} title="Ny tegning"
+                  className="px-3 py-2 text-xs text-blue-100 hover:bg-blue-700 flex items-center gap-1 shrink-0">
+            <Plus size={13}/> Ny
+          </button>
+        </div>
+      )}
 
       {/* Toolbar */}
       <div className="bg-stone-100 p-2 flex gap-1 overflow-x-auto border-b">
@@ -2859,6 +2988,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         <ToolBtn active={mode==='connect'} onClick={()=>switchMode('connect')} icon={Link2} label="Forbind"/>
         <ToolBtn active={mode==='cable'} onClick={()=>switchMode('cable')} icon={Cable} label="Kabel"/>
         <ToolBtn active={mode==='edit'} onClick={()=>switchMode('edit')} icon={Edit2} label="Rediger"/>
+        <ToolBtn active={mode==='select'} onClick={()=>switchMode('select')} icon={MousePointer2} label="Markér"/>
         <ToolBtn active={mode==='pan'} onClick={()=>switchMode('pan')} icon={Move} label="Flyt"/>
         <div className="border-l mx-1"></div>
         <button onClick={()=>setShowGrid(g=>!g)} className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${showGrid?'bg-blue-100 text-blue-900':'text-stone-600'}`}><Grid3x3 size={14}/> Grid</button>
@@ -2897,32 +3027,33 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       )}
 
       {/* Dedicated background (tegningsgrundlag) bar — compact when active */}
-      {!hideChrome && (
+      {!hideChrome && lBg && (
       <div className="bg-emerald-50 border-b border-emerald-100 px-3 py-1.5">
         <div className="flex items-center gap-2">
           <FileText size={14} className="text-emerald-700 shrink-0"/>
-          {lBg ? (
-            <>
-              <span className="text-xs text-emerald-900 truncate flex-1">{lBg.name || 'Tegningsgrundlag aktivt'}</span>
-              <button onClick={()=>setBgPanel(p=>!p)} className="text-xs px-3 py-1 bg-emerald-600 text-white rounded-lg font-semibold shrink-0">{bgPanel ? 'Skjul' : 'Juster'}</button>
-              <button onClick={removeBg} className="text-xs px-2 py-1 bg-white text-red-600 border border-red-200 rounded-lg shrink-0 flex items-center gap-1"><Trash2 size={12}/></button>
-            </>
-          ) : (
-            <>
-              <span className="text-xs text-emerald-900 flex-1">Tilføj plantegning som baggrund (PDF eller billede)</span>
-              <label className="text-xs px-3 py-1 bg-emerald-600 text-white rounded-lg font-semibold shrink-0 cursor-pointer inline-flex items-center gap-1">
-                <Upload size={13}/> Vælg fil
-                <input type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/*" onChange={onBgFile} style={{ position:'absolute', left:'-9999px', width:1, height:1 }}/>
-              </label>
-            </>
-          )}
+          <span className="text-xs text-emerald-900 truncate flex-1">{lBg.name || 'Tegningsgrundlag aktivt'}</span>
+          <button onClick={()=>{ setHideChrome(false); setBgPanel(p=>!p); }} className="text-xs px-3 py-1 bg-emerald-600 text-white rounded-lg font-semibold shrink-0">{bgPanel ? 'Skjul' : 'Juster'}</button>
+          <button onClick={removeBg} className="text-xs px-2 py-1 bg-white text-red-600 border border-red-200 rounded-lg shrink-0 flex items-center gap-1"><Trash2 size={12}/></button>
         </div>
-        {!lBg && (
-          <p className="text-[11px] text-emerald-700/80 mt-1">
+      </div>
+      )}
+
+      {/* Background adjust panel — opens from the "Juster tegningsgrundlag" header button */}
+      {bgPanel && !lBg && (
+        <div className="bg-white border-b shadow-sm px-3 py-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-semibold text-emerald-900 flex items-center gap-1"><FileText size={14}/> Tegningsgrundlag</span>
+            <button onClick={()=>setBgPanel(false)} className="text-xs px-2 py-1 bg-stone-100 rounded">Luk</button>
+          </div>
+          <p className="text-xs text-stone-600">Tilføj en plantegning (PDF eller billede) som baggrund at tegne ovenpå.</p>
+          <label className="text-sm px-3 py-2 bg-emerald-600 text-white rounded-lg font-semibold cursor-pointer inline-flex items-center gap-1.5">
+            <Upload size={15}/> Vælg fil
+            <input type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/*" onChange={onBgFile} style={{ position:'absolute', left:'-9999px', width:1, height:1 }}/>
+          </label>
+          <p className="text-[11px] text-emerald-700/80">
             Virker ikke i preview? Fil-upload kræver den installerede (Vercel) version — preview-vinduet blokerer filadgang.
           </p>
-        )}
-      </div>
+        </div>
       )}
 
       {bgBusy && (
@@ -3057,25 +3188,20 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         </div>
       )}
 
-      {/* Help bar */}
-      {!hideChrome && (
+      {/* Help bar — only shows active connect/cable status (warnings, current step) */}
+      {!hideChrome && (mode === 'connect' || mode === 'cable') && (
       <div className="bg-blue-50 text-blue-900 text-xs text-center py-1.5 px-2">
-        {mode === 'junction' && `→ Tap for at placere ${junctionShape==='tee'?'et T-stykke':junctionShape==='corner'?'et hjørne':junctionShape==='cross'?'et vejkryds':'et punkt'} · dobbeltklik for at redigere`}
-        {mode === 'board' && '→ Tap for at placere en tavle (Q1, Q2, …) · dobbeltklik for at redigere'}
-        {mode === 'load' && '→ Tap for at placere en belastning (X1, X2, …) · dobbeltklik for at redigere'}
         {mode === 'connect' && (connectFrom ? `→ Tap en anden knude for at forbinde til ${connectFrom}` : '→ Tap første knude/tavle/last')}
         {mode === 'cable' && (cableMsg
           ? `⚠ ${cableMsg}`
           : (cableFrom
               ? `→ Tap mål-tavle eller last · ruten findes automatisk fra ${cableFrom}`
               : '→ Tap kablets start-tavle (kabler går fra tavle til last/tavle)'))}
-        {mode === 'pan' && '→ Træk i baggrunden for at flytte hele lærredet · Fit nulstiller'}
-        <span className="block text-blue-700 opacity-75 mt-0.5">✌️ Dobbeltklik for at redigere · træk for at flytte · to fingre for at zoome/panne</span>
       </div>
       )}
 
       {/* Multi-select action bar (edit mode) */}
-      {mode === 'edit' && selectedNodes.length > 0 && (
+      {(mode === 'edit' || mode === 'select') && selectedNodes.length > 0 && (
         <div className="bg-blue-900 text-white px-3 py-2 flex items-center gap-2 text-sm">
           <span className="font-semibold">{selectedNodes.length} valgt</span>
           <span className="text-blue-200 text-xs">
@@ -3223,6 +3349,18 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
 
           {/* Cables are registered in the data model but not drawn on the canvas —
               they run inside the tray segments. Edit them via the Cables tab. */}
+
+          {/* Rubber-band marquee selection box */}
+          {marquee && (
+            <rect
+              x={Math.min(marquee.x0, marquee.x1)}
+              y={Math.min(marquee.y0, marquee.y1)}
+              width={Math.abs(marquee.x1 - marquee.x0)}
+              height={Math.abs(marquee.y1 - marquee.y0)}
+              fill="#2563eb" fillOpacity="0.12"
+              stroke="#2563eb" strokeWidth="1.5" strokeDasharray="5,3"
+              style={{ pointerEvents:'none' }}/>
+          )}
 
           {/* Calibration points and line */}
           {calibPoints.map((pt, i) => (
