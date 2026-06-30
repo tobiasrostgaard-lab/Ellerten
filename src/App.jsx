@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Plus, Edit2, Trash2, Download, RefreshCw, AlertCircle, CheckCircle, Settings, Cable, Layers, BookOpen, BarChart3, FileDown, Database, X, ChevronRight, Zap, GitBranch, Calculator, Upload, FileText, Save, ZoomIn, ZoomOut, Pencil, Move, Link2, MousePointer2, Grid3x3 } from 'lucide-react';
+import { Plus, Edit2, Trash2, Download, RefreshCw, AlertCircle, CheckCircle, Settings, Cable, Layers, BookOpen, BarChart3, FileDown, Database, X, ChevronRight, Zap, GitBranch, Calculator, Upload, FileText, Save, ZoomIn, ZoomOut, Pencil, Move, Link2, MousePointer2, Grid3x3, HelpCircle, Globe } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 // =========================
@@ -742,6 +742,70 @@ const StatusBadge = ({ status }) => {
 };
 
 // =========================
+// I18N — language list + translations for the shell/navigation.
+// The framework is ready to extend; deeper technical strings are localised
+// progressively. Technical terms (e.g. "cable tray") should ideally be
+// reviewed by a native engineer per regional standard.
+// =========================
+const LANGS = [
+  { code:'da',      name:'Dansk' },
+  { code:'en',      name:'English' },
+  { code:'de',      name:'Deutsch' },
+  { code:'fr',      name:'Français' },
+  { code:'es',      name:'Español' },
+  { code:'it',      name:'Italiano' },
+  { code:'pt',      name:'Português' },
+  { code:'nl',      name:'Nederlands' },
+  { code:'sv',      name:'Svenska' },
+  { code:'no',      name:'Norsk' },
+  { code:'pl',      name:'Polski' },
+  { code:'tr',      name:'Türkçe' },
+  { code:'ru',      name:'Русский' },
+  { code:'zh',      name:'中文（简体）' },
+  { code:'zh-Hant', name:'中文（繁體）' },
+  { code:'ja',      name:'日本語' },
+  { code:'ko',      name:'한국어' },
+  { code:'vi',      name:'Tiếng Việt' },
+  { code:'id',      name:'Bahasa Indonesia' },
+  { code:'th',      name:'ไทย' },
+  { code:'hi',      name:'हिन्दी' },
+  { code:'bn',      name:'বাংলা' },
+  { code:'ar',      name:'العربية', rtl:true },
+  { code:'fa',      name:'فارسی (Persisk/Farsi)', rtl:true },
+  { code:'he',      name:'עברית', rtl:true },
+  { code:'ur',      name:'اردو', rtl:true },
+];
+
+const I18N = {
+  da:      { trays:'Føringsveje', project:'Projekt', cables:'Kabler', diagram:'Diagram', catalog:'Katalog', analysis:'Analyse', language:'Sprog', exportExcel:'Eksportér Excel', unitCables:'kabler', unitTrays:'føringsveje' },
+  en:      { trays:'Cable trays', project:'Project', cables:'Cables', diagram:'Diagram', catalog:'Catalog', analysis:'Analysis', language:'Language', exportExcel:'Export Excel', unitCables:'cables', unitTrays:'cable trays' },
+  de:      { trays:'Kabeltrassen', project:'Projekt', cables:'Kabel', diagram:'Diagramm', catalog:'Katalog', analysis:'Analyse', language:'Sprache', exportExcel:'Excel exportieren', unitCables:'Kabel', unitTrays:'Kabeltrassen' },
+  fr:      { trays:'Chemins de câbles', project:'Projet', cables:'Câbles', diagram:'Schéma', catalog:'Catalogue', analysis:'Analyse', language:'Langue', exportExcel:'Exporter Excel', unitCables:'câbles', unitTrays:'chemins de câbles' },
+  es:      { trays:'Bandejas de cables', project:'Proyecto', cables:'Cables', diagram:'Diagrama', catalog:'Catálogo', analysis:'Análisis', language:'Idioma', exportExcel:'Exportar Excel', unitCables:'cables', unitTrays:'bandejas de cables' },
+  it:      { trays:'Passerelle portacavi', project:'Progetto', cables:'Cavi', diagram:'Schema', catalog:'Catalogo', analysis:'Analisi', language:'Lingua', exportExcel:'Esporta Excel', unitCables:'cavi', unitTrays:'passerelle' },
+  pt:      { trays:'Esteiras de cabos', project:'Projeto', cables:'Cabos', diagram:'Diagrama', catalog:'Catálogo', analysis:'Análise', language:'Idioma', exportExcel:'Exportar Excel', unitCables:'cabos', unitTrays:'esteiras de cabos' },
+  nl:      { trays:'Kabelgoten', project:'Project', cables:'Kabels', diagram:'Schema', catalog:'Catalogus', analysis:'Analyse', language:'Taal', exportExcel:'Excel exporteren', unitCables:'kabels', unitTrays:'kabelgoten' },
+  sv:      { trays:'Kabelstegar', project:'Projekt', cables:'Kablar', diagram:'Diagram', catalog:'Katalog', analysis:'Analys', language:'Språk', exportExcel:'Exportera Excel', unitCables:'kablar', unitTrays:'kabelstegar' },
+  no:      { trays:'Kabelbroer', project:'Prosjekt', cables:'Kabler', diagram:'Diagram', catalog:'Katalog', analysis:'Analyse', language:'Språk', exportExcel:'Eksporter Excel', unitCables:'kabler', unitTrays:'kabelbroer' },
+  pl:      { trays:'Korytka kablowe', project:'Projekt', cables:'Kable', diagram:'Schemat', catalog:'Katalog', analysis:'Analiza', language:'Język', exportExcel:'Eksportuj Excel', unitCables:'kable', unitTrays:'korytka kablowe' },
+  tr:      { trays:'Kablo kanalları', project:'Proje', cables:'Kablolar', diagram:'Şema', catalog:'Katalog', analysis:'Analiz', language:'Dil', exportExcel:"Excel'e aktar", unitCables:'kablo', unitTrays:'kablo kanalları' },
+  ru:      { trays:'Кабельные лотки', project:'Проект', cables:'Кабели', diagram:'Схема', catalog:'Каталог', analysis:'Анализ', language:'Язык', exportExcel:'Экспорт в Excel', unitCables:'кабели', unitTrays:'кабельные лотки' },
+  zh:      { trays:'电缆桥架', project:'项目', cables:'电缆', diagram:'图表', catalog:'目录', analysis:'分析', language:'语言', exportExcel:'导出 Excel', unitCables:'电缆', unitTrays:'电缆桥架' },
+  'zh-Hant':{ trays:'電纜橋架', project:'專案', cables:'電纜', diagram:'圖表', catalog:'目錄', analysis:'分析', language:'語言', exportExcel:'匯出 Excel', unitCables:'電纜', unitTrays:'電纜橋架' },
+  ja:      { trays:'ケーブルラック', project:'プロジェクト', cables:'ケーブル', diagram:'図表', catalog:'カタログ', analysis:'分析', language:'言語', exportExcel:'Excelエクスポート', unitCables:'ケーブル', unitTrays:'ケーブルラック' },
+  ko:      { trays:'케이블 트레이', project:'프로젝트', cables:'케이블', diagram:'다이어그램', catalog:'카탈로그', analysis:'분석', language:'언어', exportExcel:'Excel 내보내기', unitCables:'케이블', unitTrays:'케이블 트레이' },
+  vi:      { trays:'Khay cáp', project:'Dự án', cables:'Cáp', diagram:'Sơ đồ', catalog:'Danh mục', analysis:'Phân tích', language:'Ngôn ngữ', exportExcel:'Xuất Excel', unitCables:'cáp', unitTrays:'khay cáp' },
+  id:      { trays:'Rak kabel', project:'Proyek', cables:'Kabel', diagram:'Diagram', catalog:'Katalog', analysis:'Analisis', language:'Bahasa', exportExcel:'Ekspor Excel', unitCables:'kabel', unitTrays:'rak kabel' },
+  th:      { trays:'รางเคเบิล', project:'โครงการ', cables:'สายเคเบิล', diagram:'แผนภาพ', catalog:'แค็ตตาล็อก', analysis:'การวิเคราะห์', language:'ภาษา', exportExcel:'ส่งออก Excel', unitCables:'สายเคเบิล', unitTrays:'รางเคเบิล' },
+  hi:      { trays:'केबल ट्रे', project:'परियोजना', cables:'केबल', diagram:'आरेख', catalog:'सूची', analysis:'विश्लेषण', language:'भाषा', exportExcel:'Excel निर्यात', unitCables:'केबल', unitTrays:'केबल ट्रे' },
+  bn:      { trays:'কেবল ট্রে', project:'প্রকল্প', cables:'কেবল', diagram:'চিত্র', catalog:'ক্যাটালগ', analysis:'বিশ্লেষণ', language:'ভাষা', exportExcel:'Excel রপ্তানি', unitCables:'কেবল', unitTrays:'কেবল ট্রে' },
+  ar:      { trays:'مسارات الكابلات', project:'مشروع', cables:'كابلات', diagram:'مخطط', catalog:'كتالوج', analysis:'تحليل', language:'اللغة', exportExcel:'تصدير Excel', unitCables:'كابلات', unitTrays:'مسارات الكابلات' },
+  fa:      { trays:'سینی کابل', project:'پروژه', cables:'کابل‌ها', diagram:'نمودار', catalog:'کاتالوگ', analysis:'تحلیل', language:'زبان', exportExcel:'خروجی Excel', unitCables:'کابل‌ها', unitTrays:'سینی کابل' },
+  he:      { trays:'תעלות כבלים', project:'פרויקט', cables:'כבלים', diagram:'תרשים', catalog:'קטלוג', analysis:'ניתוח', language:'שפה', exportExcel:'ייצוא Excel', unitCables:'כבלים', unitTrays:'תעלות כבלים' },
+  ur:      { trays:'کیبل ٹرے', project:'پروجیکٹ', cables:'کیبلز', diagram:'خاکہ', catalog:'کیٹلاگ', analysis:'تجزیہ', language:'زبان', exportExcel:'Excel برآمد', unitCables:'کیبلز', unitTrays:'کیبل ٹرے' },
+};
+
+// =========================
 // MAIN APP
 // =========================
 export default function App() {
@@ -753,13 +817,17 @@ export default function App() {
   const [nodes, setNodes] = useState({});
   const [cables, setCables] = useState([]);
   const [bgImage, setBgImage] = useState(null);   // { dataUrl, x, y, scale, opacity, name }
-  const [tab, setTab] = useState('project');
+  const [tab, setTab] = useState('trays');
+  const [lang, setLang] = useState('da');
+  const t = (k) => (I18N[lang] && I18N[lang][k]) || I18N.en[k] || I18N.da[k] || k;
+  const isRTL = !!(LANGS.find(l => l.code === lang)?.rtl);
   const [editing, setEditing] = useState(null);
   const [sizingOpen, setSizingOpen] = useState(false);
   const [drawingOpen, setDrawingOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
   // Project library: list of { id, name } + the currently active project id
   const [projectList, setProjectList] = useState([]);
+  const [openTabs, setOpenTabs] = useState([]);   // project ids currently open as drawing tabs
   const [activeProjectId, setActiveProjectId] = useState(null);
   const [autoSave, setAutoSave] = useState(() => {
     try { return globalThis?.localStorage?.getItem?.('cable_app_autosave') !== 'off'; } catch (e) { return true; }
@@ -800,6 +868,12 @@ export default function App() {
           setProjectList(list);
           const activeId = idx.activeId ?? (list[0]?.id ?? null);
           setActiveProjectId(activeId);
+          // Restore which tabs were open; default to just the active drawing.
+          const validIds = new Set(list.map(p => p.id));
+          let tabs = (idx.openTabs ?? []).filter(t => validIds.has(t));
+          if (activeId && !tabs.includes(activeId)) tabs = [activeId, ...tabs];
+          if (tabs.length === 0 && activeId) tabs = [activeId];
+          setOpenTabs(tabs);
           if (activeId) {
             const pRaw = await appStorage.get(projKey(activeId));
             if (pRaw) applyBundle(JSON.parse(pRaw));
@@ -820,12 +894,20 @@ export default function App() {
           const list = [{ id, name }];
           setProjectList(list);
           setActiveProjectId(id);
-          await appStorage.set(STORAGE_INDEX, JSON.stringify({ projects: list, activeId: id }));
+          setOpenTabs([id]);
+          await appStorage.set(STORAGE_INDEX, JSON.stringify({ projects: list, activeId: id, openTabs: [id] }));
         }
       } catch (e) {}
       setLoaded(true);
     })();
   }, []);
+
+  // When the drawing editor is open, make sure the active project is an open tab.
+  useEffect(() => {
+    if (drawingOpen && activeProjectId) {
+      setOpenTabs(t => t.includes(activeProjectId) ? t : [...t, activeProjectId]);
+    }
+  }, [drawingOpen, activeProjectId]);
 
   // Persist active project bundle (only when auto-save is on)
   useEffect(() => {
@@ -836,11 +918,11 @@ export default function App() {
     return () => clearTimeout(t);
   }, [project, cableTypes, trayTypes, transformerTypes, segments, nodes, cables, bgImage, loaded, activeProjectId, autoSave]);
 
-  // Persist the index whenever the list or active id changes
+  // Persist the index whenever the list, active id or open tabs change
   useEffect(() => {
     if (!loaded) return;
-    appStorage.set(STORAGE_INDEX, JSON.stringify({ projects: projectList, activeId: activeProjectId })).catch(()=>{});
-  }, [projectList, activeProjectId, loaded]);
+    appStorage.set(STORAGE_INDEX, JSON.stringify({ projects: projectList, activeId: activeProjectId, openTabs })).catch(()=>{});
+  }, [projectList, activeProjectId, openTabs, loaded]);
 
   // Auto-Z_source from transformer
   useEffect(() => {
@@ -894,6 +976,7 @@ export default function App() {
     try { await appStorage.set(projKey(id), JSON.stringify(bundle)); } catch (e) {}
     const list = [...projectList, { id, name: name || 'Nyt projekt' }];
     setProjectList(list);
+    setOpenTabs(t => t.includes(id) ? t : [...t, id]);
     setActiveProjectId(id);
     applyBundle(bundle);
     setNewProjectOpen(false);
@@ -908,6 +991,7 @@ export default function App() {
       if (pRaw) applyBundle(JSON.parse(pRaw));
       else applyBundle(emptyBundle());
     } catch (e) { applyBundle(emptyBundle()); }
+    setOpenTabs(t => t.includes(id) ? t : [...t, id]);
     setActiveProjectId(id);
     setTab('project');
   };
@@ -937,6 +1021,7 @@ export default function App() {
         const pRaw = await appStorage.get(projKey(id));
         applyBundle(pRaw ? JSON.parse(pRaw) : emptyBundle());
       } catch (e) { applyBundle(emptyBundle()); }
+      setOpenTabs(t => t.includes(id) ? t : [...t, id]);
       setActiveProjectId(id);
     }
   };
@@ -951,6 +1036,7 @@ export default function App() {
     const fresh = emptyBundle();
     try { await appStorage.set(projKey(id), JSON.stringify(fresh)); } catch (e) {}
     setProjectList([...projectList, { id, name: name || `Tegning ${projectList.length + 1}` }]);
+    setOpenTabs(t => [...t, id]);
     setActiveProjectId(id);
     applyBundle(fresh);
   };
@@ -972,12 +1058,14 @@ export default function App() {
     if (!safeConfirm(`Slet projektet "${proj?.name ?? id}" permanent?`)) return;
     try { await appStorage.delete(projKey(id)); } catch (e) {}
     const remaining = projectList.filter(p => p.id !== id);
+    setOpenTabs(t => t.filter(x => x !== id));
     if (remaining.length === 0) {
       // Always keep at least one project — create a fresh empty one
       const newId = genId();
       const bundle = emptyBundle();
       try { await appStorage.set(projKey(newId), JSON.stringify(bundle)); } catch (e) {}
       setProjectList([{ id: newId, name: 'Mit projekt' }]);
+      setOpenTabs([newId]);
       setActiveProjectId(newId);
       applyBundle(bundle);
       return;
@@ -990,7 +1078,24 @@ export default function App() {
         const pRaw = await appStorage.get(projKey(next.id));
         applyBundle(pRaw ? JSON.parse(pRaw) : emptyBundle());
       } catch (e) { applyBundle(emptyBundle()); }
+      setOpenTabs(t => t.includes(next.id) ? t : [...t, next.id]);
       setActiveProjectId(next.id);
+    }
+  };
+
+  // Close a drawing tab WITHOUT deleting the project. The drawing stays in
+  // storage and can be reopened from the Project menu. If the closed tab was
+  // active, switch to another open tab.
+  const closeTab = async (id) => {
+    const remainingTabs = openTabs.filter(t => t !== id);
+    if (remainingTabs.length === 0) return;   // never close the last open tab
+    setOpenTabs(remainingTabs);
+    if (id === activeProjectId) {
+      const nextId = remainingTabs[remainingTabs.length - 1];
+      await commitDraftAndSwitch(
+        { nodes, segments, cables, bgImage },
+        nextId
+      );
     }
   };
 
@@ -1048,20 +1153,55 @@ export default function App() {
   const tight = A.opt.filter(o => o.severity === 'TIGHT').length;
 
   return (
-    <div className="min-h-screen bg-stone-50 pb-20" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
-      <header className="bg-gradient-to-r from-blue-900 to-blue-700 text-white p-4 sticky top-0 z-10 shadow-md">
-        <div className="flex items-center justify-between lg:max-w-6xl lg:mx-auto">
-          <div>
-            <h1 className="text-lg lg:text-xl font-bold flex items-center gap-2"><Cable size={20}/> Cable System Designer</h1>
-            <p className="text-xs lg:text-sm opacity-80">={project.site}+{project.location} · {cables.length} cables · {Object.keys(segments).length} segments</p>
+    <div dir={isRTL ? 'rtl' : 'ltr'} className="min-h-screen bg-stone-50" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
+      {/* Sticky top chrome — section tabs + header, ivory engineering style (mirrors the trays editor) */}
+      <div className="sticky top-0 z-20">
+        {/* Section tabs — the program is organised around Føringsveje (trays) as its core */}
+        <nav className="flex items-stretch overflow-x-auto border-b border-stone-200 select-none" style={{ backgroundColor:'#E9E5D9', scrollbarWidth:'thin' }}>
+          {[
+            { k:'trays',    tkey:'trays',    icon:Layers },
+            { k:'project',  tkey:'project',  icon:Settings },
+            { k:'cables',   tkey:'cables',   icon:Cable },
+            { k:'diagram',  tkey:'diagram',  icon:GitBranch },
+            { k:'catalog',  tkey:'catalog',  icon:BookOpen },
+            { k:'analysis', tkey:'analysis', icon:BarChart3 },
+          ].map(({k,tkey,icon:Icon}) => (
+            <button key={k} onClick={() => setTab(k)}
+                    className={`px-4 py-1.5 text-xs whitespace-nowrap border-r border-stone-300/50 flex items-center gap-1.5 rounded-t-lg ${tab===k ? 'font-semibold' : 'text-stone-600 hover:bg-white/40'}`}
+                    style={tab===k ? { backgroundColor:'#D7D0BC', color:'#44403c' } : undefined}>
+              <Icon size={14}/> {t(tkey)}
+            </button>
+          ))}
+        </nav>
+        {/* Header — project identity (IEC 81346) + actions */}
+        <header className="flex items-center justify-between px-4 py-1.5 border-b border-stone-200/70 shadow-sm"
+                style={{ background:'linear-gradient(to right, #F4F2EC, #FBFAF6)', color:'#44403c' }}>
+          <div className="min-w-0">
+            <h1 className="text-sm font-bold flex items-center gap-2 text-stone-800 truncate">
+              <Cable size={16} className="text-stone-600 shrink-0"/> ={project.site}+{project.location}
+            </h1>
+            <p className="text-[11px] text-stone-500 truncate">{cables.length} {t('unitCables')} · {Object.keys(segments).length} {t('unitTrays')}</p>
           </div>
-          <button onClick={() => exportXlsx({project, cables, segments, cableTypes, trayTypes}, A)} className="bg-white text-blue-900 px-3 lg:px-4 py-2 rounded-lg font-semibold text-sm flex items-center gap-1 shadow active:scale-95 transition">
-            <FileDown size={16}/> Excel
-          </button>
-        </div>
-      </header>
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Language selector */}
+            <label className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors hover:brightness-95"
+                   style={{ backgroundColor:'#E7E2D4', color:'#44403c' }} title="Vælg sprog / Language">
+              <Globe size={15}/> {t('language')}
+              <select value={lang} onChange={e=>setLang(e.target.value)}
+                      className="bg-transparent outline-none cursor-pointer text-xs font-semibold" style={{ color:'#44403c' }}>
+                {LANGS.map(l => <option key={l.code} value={l.code}>{l.name}</option>)}
+              </select>
+            </label>
+            <button onClick={() => exportXlsx({project, cables, segments, cableTypes, trayTypes}, A)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors hover:brightness-95"
+                    style={{ backgroundColor:'#E7E2D4', color:'#44403c' }}>
+              <FileDown size={15}/> {t('exportExcel')}
+            </button>
+          </div>
+        </header>
+      </div>
 
-      <main className="p-3 lg:p-6 lg:max-w-6xl lg:mx-auto space-y-3 lg:pb-24">
+      <main className="p-3 lg:p-6 lg:max-w-6xl lg:mx-auto space-y-3">
         {tab === 'project' && <ProjectTab project={project} setProject={setProject} counts={counts} critical={critical} tight={tight} loadTemplate={loadTemplate} clearAll={clearAll} transformerTypes={transformerTypes} exportProjectJSON={exportProjectJSON} fileInputRef={fileInputRef} projectList={projectList} activeProjectId={activeProjectId} switchProject={switchProject} deleteProject={deleteProject} renameProject={renameProject} openNewProject={()=>setNewProjectOpen(true)} />}
         {tab === 'cables' && <CablesTab cables={cables} setCables={setCables} cableTypes={cableTypes} segments={segments} A={A} setEditing={setEditing} setSizingOpen={setSizingOpen} exportCablesCSV={exportCablesCSV} csvInputRef={csvInputRef} />}
         {tab === 'trays' && <TraysTab segments={segments} setSegments={setSegments} trayTypes={trayTypes} A={A} setEditing={setEditing} setDrawingOpen={setDrawingOpen} />}
@@ -1074,29 +1214,10 @@ export default function App() {
       <input ref={fileInputRef} type="file" accept=".json,application/json" style={{ display:'none' }} onChange={handleJSONImport} />
       <input ref={csvInputRef} type="file" accept=".csv,text/csv" style={{ display:'none' }} onChange={handleCSVImport} />
 
-      {/* Bottom tabs */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t shadow-lg z-10">
-        <div className="grid grid-cols-6 text-center lg:max-w-6xl lg:mx-auto">
-          {[
-            { k:'project',  label:'Project', icon:Settings },
-            { k:'cables',   label:'Cables',  icon:Cable },
-            { k:'trays',    label:'Trays',   icon:Layers },
-            { k:'diagram',  label:'Diagram', icon:GitBranch },
-            { k:'catalog',  label:'Catalog', icon:BookOpen },
-            { k:'analysis', label:'Analysis',icon:BarChart3 },
-          ].map(({k,label,icon:Icon}) => (
-            <button key={k} onClick={() => setTab(k)} className={`py-2 px-0.5 lg:py-3 flex flex-col items-center gap-0.5 lg:flex-row lg:justify-center lg:gap-2 ${tab===k?'text-blue-900 bg-blue-50 font-bold':'text-stone-600'}`}>
-              <Icon size={18} />
-              <span className="text-[10px] lg:text-sm">{label}</span>
-            </button>
-          ))}
-        </div>
-      </nav>
-
       {editing && <EditModal editing={editing} setEditing={setEditing} cableTypes={cableTypes} trayTypes={trayTypes} transformerTypes={transformerTypes} segments={segments} setCables={setCables} setSegments={setSegments} setCableTypes={setCableTypes} setTrayTypes={setTrayTypes} setTransformerTypes={setTransformerTypes} cables={cables} />}
       {sizingOpen && <SizingModal close={() => setSizingOpen(false)} project={project} cableTypes={cableTypes} segments={segments} cables={cables} setCables={setCables} />}
       {drawingOpen && <DrawingModal key={activeProjectId} close={() => setDrawingOpen(false)} segments={segments} setSegments={setSegments} nodes={nodes} setNodes={setNodes} trayTypes={trayTypes} cables={cables} setCables={setCables} cableTypes={cableTypes} bgImage={bgImage} setBgImage={setBgImage} project={project}
-        projectList={projectList} activeProjectId={activeProjectId} commitDraftAndSwitch={commitDraftAndSwitch} commitDraftAndCreate={commitDraftAndCreate} saveAllDrawings={saveAllDrawings} autoSave={autoSave} toggleAutoSave={toggleAutoSave} />}
+        projectList={projectList} openTabs={openTabs} activeProjectId={activeProjectId} commitDraftAndSwitch={commitDraftAndSwitch} commitDraftAndCreate={commitDraftAndCreate} closeTab={closeTab} saveAllDrawings={saveAllDrawings} autoSave={autoSave} toggleAutoSave={toggleAutoSave} />}
       {newProjectOpen && <NewProjectModal close={() => setNewProjectOpen(false)} createProject={createProject} />}
     </div>
   );
@@ -1111,7 +1232,7 @@ function NewProjectModal({ close, createProject }) {
   return (
     <div className="fixed inset-0 bg-black/50 z-30 flex items-end lg:items-center justify-center p-4" onClick={close}>
       <div className="bg-white p-4 rounded-2xl w-full lg:max-w-md" onClick={e=>e.stopPropagation()}>
-        <h3 className="font-bold mb-3 text-blue-900 flex items-center gap-2"><Plus size={18}/> Nyt projekt</h3>
+        <h3 className="font-bold mb-3 text-stone-800 flex items-center gap-2"><Plus size={18}/> Nyt projekt</h3>
         <FormField label="Projektnavn" value={name} onChange={setName} hint="fx Kontorbygning Vest, Datacenter Nord" />
         <label className="block text-xs font-semibold text-stone-600 mt-3 mb-1">Start fra</label>
         <div className="space-y-2">
@@ -1121,7 +1242,7 @@ function NewProjectModal({ close, createProject }) {
             ['dc', 'Datacenter-skabelon', 'Tier III, 2N redundans — stort eksempel'],
           ].map(([k, title, desc]) => (
             <button key={k} onClick={()=>setTemplate(k)}
-              className={`w-full text-left p-2.5 rounded-lg border-2 ${template===k ? 'border-blue-500 bg-blue-50' : 'border-stone-200'}`}>
+              className={`w-full text-left p-2.5 rounded-lg border-2 ${template===k ? 'border-stone-500 bg-stone-100' : 'border-stone-200'}`}>
               <div className="font-semibold text-sm text-stone-800">{title}</div>
               <div className="text-xs text-stone-500">{desc}</div>
             </button>
@@ -1129,7 +1250,7 @@ function NewProjectModal({ close, createProject }) {
         </div>
         <div className="flex gap-2 mt-4">
           <button onClick={close} className="flex-1 py-3 border border-stone-300 rounded-lg font-semibold">Annuller</button>
-          <button onClick={()=>createProject(name.trim() || 'Nyt projekt', template)} className="flex-[2] py-3 bg-blue-900 text-white rounded-lg font-semibold">Opret projekt</button>
+          <button onClick={()=>createProject(name.trim() || 'Nyt projekt', template)} className="flex-[2] py-3 bg-stone-800 text-white rounded-lg font-semibold">Opret projekt</button>
         </div>
       </div>
     </div>
@@ -1145,23 +1266,23 @@ function ProjectTab({ project, setProject, counts, critical, tight, loadTemplate
       {/* Project library */}
       <div className="bg-white p-3 rounded-xl shadow-sm lg:col-span-2">
         <div className="flex items-center justify-between mb-2">
-          <h2 className="font-bold text-blue-900 flex items-center gap-1"><FileText size={16}/> Projekter</h2>
-          <button onClick={openNewProject} className="bg-blue-900 text-white px-3 py-1.5 rounded-lg text-sm font-semibold flex items-center gap-1 active:scale-95"><Plus size={14}/> Nyt projekt</button>
+          <h2 className="font-bold text-stone-800 flex items-center gap-1"><FileText size={16}/> Projekter</h2>
+          <button onClick={openNewProject} className="bg-stone-800 text-white px-3 py-1.5 rounded-lg text-sm font-semibold flex items-center gap-1 active:scale-95"><Plus size={14}/> Nyt projekt</button>
         </div>
         <div className="space-y-1">
           {(projectList || []).map(p => (
-            <div key={p.id} className={`flex items-center gap-2 p-2 rounded-lg border ${p.id===activeProjectId ? 'bg-blue-50 border-blue-300' : 'border-stone-200'}`}>
+            <div key={p.id} className={`flex items-center gap-2 p-2 rounded-lg border ${p.id===activeProjectId ? 'bg-stone-100 border-stone-300' : 'border-stone-200'}`}>
               <button onClick={()=>switchProject(p.id)} className="flex-1 text-left flex items-center gap-2">
-                <div className={`w-2.5 h-2.5 rounded-full ${p.id===activeProjectId ? 'bg-blue-600' : 'bg-stone-300'}`}/>
+                <div className={`w-2.5 h-2.5 rounded-full ${p.id===activeProjectId ? 'bg-stone-700' : 'bg-stone-300'}`}/>
                 <input
                   value={p.name}
                   onChange={(e)=>renameProject(p.id, e.target.value)}
                   onClick={(e)=>e.stopPropagation()}
-                  className="bg-transparent font-medium text-stone-800 text-sm outline-none focus:bg-white focus:border focus:border-blue-300 rounded px-1 py-0.5 min-w-0 flex-1"
+                  className="bg-transparent font-medium text-stone-800 text-sm outline-none focus:bg-white focus:border focus:border-stone-300 rounded px-1 py-0.5 min-w-0 flex-1"
                 />
-                {p.id===activeProjectId && <span className="text-[10px] bg-blue-600 text-white px-1.5 py-0.5 rounded font-semibold">aktiv</span>}
+                {p.id===activeProjectId && <span className="text-[10px] bg-stone-700 text-white px-1.5 py-0.5 rounded font-semibold">aktiv</span>}
               </button>
-              <button onClick={()=>deleteProject(p.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded" title="Slet projekt"><Trash2 size={15}/></button>
+              <button onClick={()=>deleteProject(p.id)} className="p-1.5 text-stone-400 hover:text-stone-700 hover:bg-stone-100 rounded transition-colors" title="Slet projekt"><Trash2 size={15}/></button>
             </div>
           ))}
           {(projectList || []).length === 0 && (
@@ -1172,18 +1293,18 @@ function ProjectTab({ project, setProject, counts, critical, tight, loadTemplate
       </div>
 
       <div className="bg-white p-3 rounded-xl shadow-sm lg:col-span-2">
-        <h2 className="font-bold text-blue-900 mb-2">System status</h2>
+        <h2 className="font-bold text-stone-800 mb-2">System status</h2>
         <div className="grid grid-cols-3 lg:grid-cols-5 gap-2 text-center">
-          <Stat label="LS1" value={counts.LS1} bg={LS_COLOR.LS1} color={LS_BORDER.LS1} />
-          <Stat label="LS2" value={counts.LS2} bg={LS_COLOR.LS2} color={LS_BORDER.LS2} />
-          <Stat label="LS3" value={counts.LS3} bg={LS_COLOR.LS3} color={LS_BORDER.LS3} />
-          <Stat label="Critical" value={critical} bg={critical>0?'#FFC7CE':'#C6EFCE'} color={critical>0?'#9C0006':'#006100'} />
-          <Stat label="Tight" value={tight} bg={tight>0?'#FFEB9C':'#C6EFCE'} color={tight>0?'#9C5700':'#006100'} />
+          <Stat label="LS1" value={counts.LS1} dot={LS_BORDER.LS1} />
+          <Stat label="LS2" value={counts.LS2} dot={LS_BORDER.LS2} />
+          <Stat label="LS3" value={counts.LS3} dot={LS_BORDER.LS3} />
+          <Stat label="Critical" value={critical} dot={critical>0?'#dc2626':'#16a34a'} alert={critical>0} />
+          <Stat label="Tight" value={tight} dot={tight>0?'#d97706':'#16a34a'} alert={tight>0} />
         </div>
       </div>
 
       <div className="bg-white p-3 rounded-xl shadow-sm">
-        <h2 className="font-bold text-blue-900 mb-3">Project parameters</h2>
+        <h2 className="font-bold text-stone-800 mb-3">Project parameters</h2>
         <FormField label="Site (IEC 81346 =)" value={project.site} onChange={v=>update('site', v)} />
         <FormField label="Location (+)" value={project.location} onChange={v=>update('location', v)} />
         <FormField label="Description" value={project.description} onChange={v=>update('description', v)} />
@@ -1195,7 +1316,7 @@ function ProjectTab({ project, setProject, counts, critical, tight, loadTemplate
       </div>
 
       <div className="bg-white p-3 rounded-xl shadow-sm">
-        <h2 className="font-bold text-blue-900 mb-3 flex items-center gap-1"><Zap size={16}/> MV-side (transformer)</h2>
+        <h2 className="font-bold text-stone-800 mb-3 flex items-center gap-1"><Zap size={16}/> MV-side (transformer)</h2>
         <Selector label="Linked transformer (MV→LV)" value={project.transformer || ''} onChange={v=>update('transformer', v || null)} options={['', ...Object.keys(transformerTypes)]} />
         {linkedT && (
           <div className="bg-stone-50 p-2 rounded text-xs mb-2 space-y-0.5">
@@ -1208,9 +1329,9 @@ function ProjectTab({ project, setProject, counts, critical, tight, loadTemplate
       </div>
 
       <div className="bg-white p-3 rounded-xl shadow-sm">
-        <h2 className="font-bold text-blue-900 mb-2 flex items-center gap-1"><Save size={16}/> Import / Export</h2>
+        <h2 className="font-bold text-stone-800 mb-2 flex items-center gap-1"><Save size={16}/> Import / Export</h2>
         <p className="text-xs text-stone-600 mb-3">Flyt projektet mellem enheder via JSON-fil, eller del med kolleger.</p>
-        <button onClick={exportProjectJSON} className="w-full bg-blue-50 hover:bg-blue-100 text-blue-900 p-3 rounded-lg mb-2 flex items-center justify-center gap-2 font-semibold active:scale-98 transition">
+        <button onClick={exportProjectJSON} className="w-full bg-stone-100 hover:bg-stone-200 text-stone-800 p-3 rounded-lg mb-2 flex items-center justify-center gap-2 font-semibold active:scale-98 transition">
           <Download size={16}/> Eksportér projekt (JSON)
         </button>
         <button onClick={() => fileInputRef.current?.click()} className="w-full bg-green-50 hover:bg-green-100 text-green-900 p-3 rounded-lg flex items-center justify-center gap-2 font-semibold active:scale-98 transition">
@@ -1219,9 +1340,9 @@ function ProjectTab({ project, setProject, counts, critical, tight, loadTemplate
       </div>
 
       <div className="bg-white p-3 rounded-xl shadow-sm">
-        <h2 className="font-bold text-blue-900 mb-2">Templates</h2>
+        <h2 className="font-bold text-stone-800 mb-2">Templates</h2>
         <p className="text-xs text-stone-600 mb-3">Erstat det nuværende projekt med en færdig opsætning.</p>
-        <button onClick={() => loadTemplate('office')} className="w-full bg-blue-50 border-2 border-blue-200 hover:bg-blue-100 text-blue-900 p-3 rounded-lg mb-2 flex items-center justify-between active:scale-98 transition">
+        <button onClick={() => loadTemplate('office')} className="w-full bg-stone-100 border-2 border-stone-300 hover:bg-stone-200 text-stone-800 p-3 rounded-lg mb-2 flex items-center justify-between active:scale-98 transition">
           <span className="font-semibold">Small office (B1+02)</span>
           <ChevronRight size={18} />
         </button>
@@ -1234,7 +1355,7 @@ function ProjectTab({ project, setProject, counts, critical, tight, loadTemplate
         </button>
       </div>
 
-      <div className="bg-blue-50 border border-blue-200 p-3 rounded-xl text-xs text-blue-900">
+      <div className="bg-stone-100 border border-stone-300 p-3 rounded-xl text-xs text-stone-800">
         <p className="font-semibold mb-1">📱 Tip</p>
         <p>Tilføj denne side til din hjemmeskærm via Safari/Chrome's del-menu, så fungerer den som en app. Data gemmes automatisk på din enhed.</p>
       </div>
@@ -1242,11 +1363,14 @@ function ProjectTab({ project, setProject, counts, critical, tight, loadTemplate
   );
 }
 
-function Stat({ label, value, bg, color }) {
+function Stat({ label, value, dot, alert }) {
   return (
-    <div className="p-2 rounded-lg" style={{ background:bg }}>
-      <div className="text-xs" style={{ color }}>{label}</div>
-      <div className="text-xl font-bold" style={{ color }}>{value}</div>
+    <div className="px-3 py-2.5 rounded-lg bg-white border border-stone-200 flex flex-col items-center justify-center gap-1">
+      <div className="flex items-center gap-1.5 text-[11px] font-medium text-stone-500">
+        {dot && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: dot }} />}
+        {label}
+      </div>
+      <div className="text-xl font-bold" style={{ color: alert ? dot : '#44403c' }}>{value}</div>
     </div>
   );
 }
@@ -1280,11 +1404,11 @@ function CablesTab({ cables, setCables, cableTypes, segments, A, setEditing, set
       <div className="bg-white p-3 rounded-xl shadow-sm sticky top-16 z-5">
         <div className="flex gap-2 mb-2">
           <input value={filter} onChange={e=>setFilter(e.target.value)} placeholder="Søg cable ID, from, to..." className="flex-1 px-3 py-2 border rounded-lg text-sm" />
-          <button onClick={() => setEditing({ kind:'cable', item: { id:`W${String(cables.length+1).padStart(3,'0')}`, from:'', to:'', function:'Socket circuit', V:230, phases:1, cable_type:Object.keys(cableTypes)[0], Ib:0, In:0, cos_phi:0.9, route:[] }, isNew:true })} className="bg-blue-900 text-white px-3 py-2 rounded-lg active:scale-95"><Plus size={18}/></button>
+          <button onClick={() => setEditing({ kind:'cable', item: { id:`W${String(cables.length+1).padStart(3,'0')}`, from:'', to:'', function:'Socket circuit', V:230, phases:1, cable_type:Object.keys(cableTypes)[0], Ib:0, In:0, cos_phi:0.9, route:[] }, isNew:true })} className="bg-stone-800 text-white px-3 py-2 rounded-lg active:scale-95"><Plus size={18}/></button>
         </div>
         <div className="flex gap-1 text-xs items-center">
           {['all','LS1','LS2','LS3'].map(l => (
-            <button key={l} onClick={()=>setLsFilter(l)} className={`px-2 py-1 rounded ${lsFilter===l?'bg-blue-900 text-white':'bg-stone-100 text-stone-700'}`}>{l}</button>
+            <button key={l} onClick={()=>setLsFilter(l)} className={`px-2 py-1 rounded ${lsFilter===l?'bg-stone-800 text-white':'bg-stone-100 text-stone-700'}`}>{l}</button>
           ))}
           <div className="ml-auto flex gap-1">
             <button onClick={() => setSizingOpen(true)} className="px-2 py-1 rounded bg-amber-100 text-amber-900 flex items-center gap-1 active:scale-95"><Calculator size={12}/> Sizing</button>
@@ -1309,7 +1433,7 @@ function CablesTab({ cables, setCables, cableTypes, segments, A, setEditing, set
             <div className="flex items-start justify-between mb-1">
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-0.5">
-                  <span className="font-bold text-blue-900">{c.id}</span>
+                  <span className="font-bold text-stone-800">{c.id}</span>
                   <LSBadge ls={d?.ls} />
                   <StatusBadge status={d?.status} />
                 </div>
@@ -1317,7 +1441,7 @@ function CablesTab({ cables, setCables, cableTypes, segments, A, setEditing, set
                 <div className="text-xs text-stone-500">{c.function} · {c.cable_type} · {c.V}V {c.phases}P</div>
               </div>
               <div className="flex gap-1">
-                <button onClick={()=>setEditing({ kind:'cable', item:c, isNew:false })} className="p-2 text-blue-700"><Edit2 size={16}/></button>
+                <button onClick={()=>setEditing({ kind:'cable', item:c, isNew:false })} className="p-2 text-stone-700"><Edit2 size={16}/></button>
                 <button onClick={()=>delCable(c.id)} className="p-2 text-red-600"><Trash2 size={16}/></button>
               </div>
             </div>
@@ -1354,11 +1478,15 @@ function TraysTab({ segments, setSegments, trayTypes, A, setEditing, setDrawingO
   const delSeg = (id) => { if (safeConfirm(`Slet ${id}?`)) { const s = {...segments}; delete s[id]; setSegments(s); } };
   return (
     <div className="space-y-2">
-      <div className="bg-white p-3 rounded-xl shadow-sm sticky top-16 z-5 flex justify-between items-center gap-2">
-        <div className="text-sm text-stone-700">{segs.length} tray segments</div>
-        <div className="flex gap-1">
-          <button onClick={() => setDrawingOpen(true)} className="bg-amber-500 text-white px-3 py-2 rounded-lg text-sm font-semibold flex items-center gap-1 active:scale-95"><Pencil size={14}/> Tegn</button>
-          <button onClick={()=>setEditing({ kind:'segment', item:{ id:`WC${String(segs.length+1).padStart(3,'0')}`, from:'', to:'', length_m:5, tray_type:Object.keys(trayTypes)[0] }, isNew:true })} className="bg-blue-900 text-white px-3 py-2 rounded-lg active:scale-95"><Plus size={18}/></button>
+      <div className="bg-white p-3 rounded-xl shadow-sm sticky top-[88px] z-5 flex justify-between items-center gap-2 border border-stone-200/70">
+        <div className="text-sm text-stone-700">{segs.length} føringsvejssegmenter</div>
+        <div className="flex gap-1.5">
+          <button onClick={() => setDrawingOpen(true)}
+                  className="px-3.5 py-2 rounded-lg text-sm font-semibold flex items-center gap-1.5 active:scale-95 transition-colors hover:brightness-110"
+                  style={{ backgroundColor:'#44403c', color:'#fff' }}><Pencil size={14}/> Åbn tegning</button>
+          <button onClick={()=>setEditing({ kind:'segment', item:{ id:`WC${String(segs.length+1).padStart(3,'0')}`, from:'', to:'', length_m:5, tray_type:Object.keys(trayTypes)[0] }, isNew:true })}
+                  className="px-3 py-2 rounded-lg active:scale-95 transition-colors hover:brightness-95"
+                  style={{ backgroundColor:'#E7E2D4', color:'#44403c' }}><Plus size={18}/></button>
         </div>
       </div>
       {segs.length === 0 && (
@@ -1374,14 +1502,14 @@ function TraysTab({ segments, setSegments, trayTypes, A, setEditing, setDrawingO
             <div className="flex justify-between items-start mb-1">
               <div className="flex-1">
                 <div className="flex items-center gap-2">
-                  <span className="font-bold text-blue-900">{id}</span>
+                  <span className="font-bold text-stone-800">{id}</span>
                   <StatusBadge status={f?.status}/>
                 </div>
                 <div className="text-sm text-stone-700">{s.from} → {s.to}</div>
                 <div className="text-xs text-stone-500">{s.length_m}m · {s.tray_type}</div>
               </div>
               <div className="flex gap-1">
-                <button onClick={()=>setEditing({ kind:'segment', item:{id, ...s}, isNew:false })} className="p-2 text-blue-700"><Edit2 size={16}/></button>
+                <button onClick={()=>setEditing({ kind:'segment', item:{id, ...s}, isNew:false })} className="p-2 text-stone-700"><Edit2 size={16}/></button>
                 <button onClick={()=>delSeg(id)} className="p-2 text-red-600"><Trash2 size={16}/></button>
               </div>
             </div>
@@ -1413,25 +1541,25 @@ function CatalogTab({ cableTypes, setCableTypes, trayTypes, setTrayTypes, transf
   return (
     <div className="space-y-2">
       <div className="bg-white p-2 rounded-xl shadow-sm grid grid-cols-3 gap-1 text-xs">
-        <button onClick={()=>setSub('cables')} className={`py-2 rounded ${sub==='cables'?'bg-blue-900 text-white':'text-stone-700'}`}>Cables</button>
-        <button onClick={()=>setSub('trays')} className={`py-2 rounded ${sub==='trays'?'bg-blue-900 text-white':'text-stone-700'}`}>Trays</button>
-        <button onClick={()=>setSub('xfmr')} className={`py-2 rounded ${sub==='xfmr'?'bg-blue-900 text-white':'text-stone-700'}`}>Transformers</button>
+        <button onClick={()=>setSub('cables')} className={`py-2 rounded ${sub==='cables'?'bg-stone-800 text-white':'text-stone-700'}`}>Cables</button>
+        <button onClick={()=>setSub('trays')} className={`py-2 rounded ${sub==='trays'?'bg-stone-800 text-white':'text-stone-700'}`}>Trays</button>
+        <button onClick={()=>setSub('xfmr')} className={`py-2 rounded ${sub==='xfmr'?'bg-stone-800 text-white':'text-stone-700'}`}>Transformers</button>
       </div>
 
       {sub === 'cables' && (
         <>
           <div className="flex justify-end">
-            <button onClick={()=>setEditing({ kind:'cable_type', item:{ name:'New cable', conductors:5, cross_section:'5G6', S_mm2:6, od_mm:13, iz_a:38, is_parallel:1 }, isNew:true })} className="bg-blue-900 text-white px-3 py-2 rounded-lg text-sm flex items-center gap-1"><Plus size={16}/> Tilføj</button>
+            <button onClick={()=>setEditing({ kind:'cable_type', item:{ name:'New cable', conductors:5, cross_section:'5G6', S_mm2:6, od_mm:13, iz_a:38, is_parallel:1 }, isNew:true })} className="bg-stone-800 text-white px-3 py-2 rounded-lg text-sm flex items-center gap-1"><Plus size={16}/> Tilføj</button>
           </div>
           {Object.entries(cableTypes).map(([n, t]) => (
             <div key={n} className="bg-white p-3 rounded-xl shadow-sm">
               <div className="flex justify-between items-start">
                 <div>
-                  <div className="font-bold text-blue-900">{n}</div>
+                  <div className="font-bold text-stone-800">{n}</div>
                   <div className="text-xs text-stone-500">{t.cross_section} · {t.conductors} cond · {t.is_parallel}× parallel</div>
                 </div>
                 <div className="flex gap-1">
-                  <button onClick={()=>setEditing({ kind:'cable_type', item:{name:n, ...t}, isNew:false })} className="p-2 text-blue-700"><Edit2 size={16}/></button>
+                  <button onClick={()=>setEditing({ kind:'cable_type', item:{name:n, ...t}, isNew:false })} className="p-2 text-stone-700"><Edit2 size={16}/></button>
                   <button onClick={()=>{ if(safeConfirm(`Slet ${n}?`)){ const c={...cableTypes}; delete c[n]; setCableTypes(c); } }} className="p-2 text-red-600"><Trash2 size={16}/></button>
                 </div>
               </div>
@@ -1449,17 +1577,17 @@ function CatalogTab({ cableTypes, setCableTypes, trayTypes, setTrayTypes, transf
       {sub === 'trays' && (
         <>
           <div className="flex justify-end">
-            <button onClick={()=>setEditing({ kind:'tray_type', item:{ name:'New tray', width_mm:200, height_mm:60, gross_area_mm2:12000, max_fill_percent:40 }, isNew:true })} className="bg-blue-900 text-white px-3 py-2 rounded-lg text-sm flex items-center gap-1"><Plus size={16}/> Tilføj</button>
+            <button onClick={()=>setEditing({ kind:'tray_type', item:{ name:'New tray', width_mm:200, height_mm:60, gross_area_mm2:12000, max_fill_percent:40 }, isNew:true })} className="bg-stone-800 text-white px-3 py-2 rounded-lg text-sm flex items-center gap-1"><Plus size={16}/> Tilføj</button>
           </div>
           {Object.entries(trayTypes).map(([n, t]) => (
             <div key={n} className="bg-white p-3 rounded-xl shadow-sm">
               <div className="flex justify-between items-start">
                 <div>
-                  <div className="font-bold text-blue-900">{n}</div>
+                  <div className="font-bold text-stone-800">{n}</div>
                   <div className="text-xs text-stone-500">{t.width_mm} × {t.height_mm} mm · max {t.max_fill_percent}%</div>
                 </div>
                 <div className="flex gap-1">
-                  <button onClick={()=>setEditing({ kind:'tray_type', item:{name:n, ...t}, isNew:false })} className="p-2 text-blue-700"><Edit2 size={16}/></button>
+                  <button onClick={()=>setEditing({ kind:'tray_type', item:{name:n, ...t}, isNew:false })} className="p-2 text-stone-700"><Edit2 size={16}/></button>
                   <button onClick={()=>{ if(safeConfirm(`Slet ${n}?`)){ const c={...trayTypes}; delete c[n]; setTrayTypes(c); } }} className="p-2 text-red-600"><Trash2 size={16}/></button>
                 </div>
               </div>
@@ -1474,7 +1602,7 @@ function CatalogTab({ cableTypes, setCableTypes, trayTypes, setTrayTypes, transf
             MV-side transformere. Vælg én i <b>Project</b>-fanen for automatisk Z_source-beregning.
           </div>
           <div className="flex justify-end">
-            <button onClick={()=>setEditing({ kind:'transformer_type', item:{ name:'New TR', S_kVA:1000, U_pri_kV:10, U_sec_V:400, uk_pct:6 }, isNew:true })} className="bg-blue-900 text-white px-3 py-2 rounded-lg text-sm flex items-center gap-1"><Plus size={16}/> Tilføj</button>
+            <button onClick={()=>setEditing({ kind:'transformer_type', item:{ name:'New TR', S_kVA:1000, U_pri_kV:10, U_sec_V:400, uk_pct:6 }, isNew:true })} className="bg-stone-800 text-white px-3 py-2 rounded-lg text-sm flex items-center gap-1"><Plus size={16}/> Tilføj</button>
           </div>
           {Object.entries(transformerTypes).map(([n, t]) => {
             const z = calcZsource(t, 1);
@@ -1482,11 +1610,11 @@ function CatalogTab({ cableTypes, setCableTypes, trayTypes, setTrayTypes, transf
               <div key={n} className="bg-white p-3 rounded-xl shadow-sm">
                 <div className="flex justify-between items-start">
                   <div>
-                    <div className="font-bold text-blue-900">{n}</div>
+                    <div className="font-bold text-stone-800">{n}</div>
                     <div className="text-xs text-stone-500">{t.S_kVA} kVA · {t.U_pri_kV} kV / {t.U_sec_V} V · uk={t.uk_pct}%</div>
                   </div>
                   <div className="flex gap-1">
-                    <button onClick={()=>setEditing({ kind:'transformer_type', item:{name:n, ...t}, isNew:false })} className="p-2 text-blue-700"><Edit2 size={16}/></button>
+                    <button onClick={()=>setEditing({ kind:'transformer_type', item:{name:n, ...t}, isNew:false })} className="p-2 text-stone-700"><Edit2 size={16}/></button>
                     <button onClick={()=>{ if(safeConfirm(`Slet ${n}?`)){ const c={...transformerTypes}; delete c[n]; setTransformerTypes(c); } }} className="p-2 text-red-600"><Trash2 size={16}/></button>
                   </div>
                 </div>
@@ -1534,7 +1662,7 @@ function DiagramTab({ cables, A, project }) {
         <div className="flex items-center gap-2 mb-2">
           <span className="text-xs text-stone-600 font-semibold">Max depth:</span>
           {[1,2,3,4,5,99].map(d => (
-            <button key={d} onClick={() => setMaxDepth(d===99?Infinity:d)} className={`px-2 py-1 text-xs rounded ${maxDepth===(d===99?Infinity:d)?'bg-blue-900 text-white':'bg-stone-100 text-stone-700'}`}>{d===99?'∞':d}</button>
+            <button key={d} onClick={() => setMaxDepth(d===99?Infinity:d)} className={`px-2 py-1 text-xs rounded ${maxDepth===(d===99?Infinity:d)?'bg-stone-800 text-white':'bg-stone-100 text-stone-700'}`}>{d===99?'∞':d}</button>
           ))}
         </div>
         <div className="flex items-center gap-2">
@@ -1542,7 +1670,7 @@ function DiagramTab({ cables, A, project }) {
           <span className="text-xs text-stone-600">{Math.round(zoom*100)}%</span>
           <button onClick={()=>setZoom(z=>Math.min(3, z+0.2))} className="px-2 py-1 text-xs bg-stone-100 rounded flex items-center gap-1"><ZoomIn size={12}/></button>
           <button onClick={()=>setZoom(1)} className="px-2 py-1 text-xs bg-stone-100 rounded">Fit</button>
-          <button onClick={downloadSVG} className="ml-auto px-2 py-1 text-xs bg-blue-900 text-white rounded flex items-center gap-1"><Download size={12}/> SVG</button>
+          <button onClick={downloadSVG} className="ml-auto px-2 py-1 text-xs bg-stone-800 text-white rounded flex items-center gap-1"><Download size={12}/> SVG</button>
         </div>
       </div>
 
@@ -1647,7 +1775,7 @@ function SizingModal({ close, project, cableTypes, segments, cables, setCables }
     <div className="fixed inset-0 bg-black/50 z-20 flex items-end lg:items-center lg:justify-center lg:p-4" onClick={close}>
       <div className="bg-white w-full lg:max-w-2xl lg:rounded-2xl max-h-[90vh] overflow-y-auto rounded-t-2xl p-4 lg:p-6" onClick={e=>e.stopPropagation()}>
         <div className="flex justify-between items-center mb-3">
-          <h2 className="font-bold text-blue-900 flex items-center gap-1"><Calculator size={18}/> Cable sizing helper</h2>
+          <h2 className="font-bold text-stone-800 flex items-center gap-1"><Calculator size={18}/> Cable sizing helper</h2>
           <button onClick={close} className="p-2"><X size={20}/></button>
         </div>
         <p className="text-xs text-stone-600 mb-3">Indtast belastning og routing-data — finder mindste kabel der passerer derating og ΔU.</p>
@@ -1687,7 +1815,7 @@ function SizingModal({ close, project, cableTypes, segments, cables, setCables }
                     <div className="font-bold">{c.name} {i===0 && <span className="text-xs text-green-700">← anbefalet</span>}</div>
                     <div className="text-xs text-stone-600">{c.type.cross_section} · {c.type.iz_a} A base</div>
                   </div>
-                  <button onClick={()=>applyCandidate(c)} className="px-3 py-1 bg-blue-900 text-white text-xs rounded">Brug</button>
+                  <button onClick={()=>applyCandidate(c)} className="px-3 py-1 bg-stone-800 text-white text-xs rounded">Brug</button>
                 </div>
                 <div className="grid grid-cols-4 gap-1 text-xs">
                   <Mini label="In" v={`${c.In}A`}/>
@@ -1713,7 +1841,7 @@ function AnalysisTab({ cables, A, cableTypes, segments }) {
     <div className="space-y-2">
       <div className="bg-white p-2 rounded-xl shadow-sm grid grid-cols-4 gap-1 text-xs">
         {[['opt','Optimization'],['vd','ΔU'],['sc','Short-circuit'],['sel','Selectivity']].map(([k,l]) => (
-          <button key={k} onClick={()=>setView(k)} className={`py-2 rounded ${view===k?'bg-blue-900 text-white':'text-stone-700'}`}>{l}</button>
+          <button key={k} onClick={()=>setView(k)} className={`py-2 rounded ${view===k?'bg-stone-800 text-white':'text-stone-700'}`}>{l}</button>
         ))}
       </div>
 
@@ -1734,7 +1862,7 @@ function AnalysisTab({ cables, A, cableTypes, segments }) {
               </div>
               <div className="text-sm font-semibold text-stone-700">{o.issue}</div>
               <div className="text-xs text-stone-600 mt-1">{o.detail}</div>
-              <div className="text-xs text-blue-800 mt-1">→ {o.rec}</div>
+              <div className="text-xs text-stone-700 mt-1">→ {o.rec}</div>
             </div>
           ))}
         </>
@@ -1743,7 +1871,7 @@ function AnalysisTab({ cables, A, cableTypes, segments }) {
       {view === 'vd' && (
         <div className="bg-white rounded-xl shadow-sm overflow-x-auto">
           <table className="w-full text-xs">
-            <thead className="bg-blue-900 text-white"><tr><th className="p-2 text-left">Cable</th><th className="p-2">L</th><th className="p-2">ΔU local</th><th className="p-2">ΔU total</th><th className="p-2">Limit</th><th className="p-2"></th></tr></thead>
+            <thead className="bg-stone-800 text-white"><tr><th className="p-2 text-left">Cable</th><th className="p-2">L</th><th className="p-2">ΔU local</th><th className="p-2">ΔU total</th><th className="p-2">Limit</th><th className="p-2"></th></tr></thead>
             <tbody>
               {cables.map(c => { const v = A.vd[c.id]; if (!v) return null; return (
                 <tr key={c.id} className="border-b">
@@ -1763,7 +1891,7 @@ function AnalysisTab({ cables, A, cableTypes, segments }) {
       {view === 'sc' && (
         <div className="bg-white rounded-xl shadow-sm overflow-x-auto">
           <table className="w-full text-xs">
-            <thead className="bg-blue-900 text-white"><tr><th className="p-2 text-left">Cable</th><th className="p-2">MCB</th><th className="p-2">Z [mΩ]</th><th className="p-2">Ik</th><th className="p-2">Ia</th><th className="p-2"></th></tr></thead>
+            <thead className="bg-stone-800 text-white"><tr><th className="p-2 text-left">Cable</th><th className="p-2">MCB</th><th className="p-2">Z [mΩ]</th><th className="p-2">Ik</th><th className="p-2">Ia</th><th className="p-2"></th></tr></thead>
             <tbody>
               {cables.map(c => { const s = A.sc[c.id]; return (
                 <tr key={c.id} className="border-b">
@@ -1783,7 +1911,7 @@ function AnalysisTab({ cables, A, cableTypes, segments }) {
       {view === 'sel' && (
         <div className="bg-white rounded-xl shadow-sm overflow-x-auto">
           <table className="w-full text-xs">
-            <thead className="bg-blue-900 text-white"><tr><th className="p-2 text-left">Upstream</th><th className="p-2">→</th><th className="p-2 text-left">Down</th><th className="p-2">In ratio</th><th className="p-2">Status</th></tr></thead>
+            <thead className="bg-stone-800 text-white"><tr><th className="p-2 text-left">Upstream</th><th className="p-2">→</th><th className="p-2 text-left">Down</th><th className="p-2">In ratio</th><th className="p-2">Status</th></tr></thead>
             <tbody>
               {A.sel.map((s, i) => (
                 <tr key={i} className="border-b">
@@ -1805,7 +1933,7 @@ function AnalysisTab({ cables, A, cableTypes, segments }) {
 // =========================
 // DRAWING MODAL — interactive cable tray layout editor
 // =========================
-function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project, projectList, activeProjectId, commitDraftAndSwitch, commitDraftAndCreate, saveAllDrawings, autoSave, toggleAutoSave }) {
+function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project, projectList, openTabs, activeProjectId, commitDraftAndSwitch, commitDraftAndCreate, closeTab, saveAllDrawings, autoSave, toggleAutoSave }) {
   // local working state
   // Node shape: { x, y, kind: 'junction'|'board'|'load', ...meta }
   //   board meta: { board_type, In_main }
@@ -1848,6 +1976,8 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const [addPanel, setAddPanel] = useState(false);            // "Tilføj nyt objekt" category bar open
   const [addCategory, setAddCategory] = useState(null);       // 'trays'|'boards'|'loads'|'cables'
   const [showTools, setShowTools] = useState(true);           // show/hide the view/navigation toolbar
+  const [showTips, setShowTips] = useState(false);            // show/hide the edit-mode hint text below the toolbar
+  const [collapsedBars, setCollapsedBars] = useState({});     // per-bar collapse: { header, category, nav, options }
   const [ctxMenu, setCtxMenu] = useState(null);               // right-click context menu {x,y} in screen px
   const [ctxSub, setCtxSub] = useState(null);                 // which submenu is hovered open
   const [catEdit, setCatEdit] = useState(null);               // network id whose objects are being edited
@@ -2099,6 +2229,23 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       setAddPanel(true);
     }
   };
+  // --- Per-bar collapse: double-click a bar to shrink it to a thin strip,
+  // double-click the strip to bring the bar back. ---
+  const toggleBar = (id) => setCollapsedBars(c => ({ ...c, [id]: !c[id] }));
+  // Only collapse when double-clicking the bar's empty area, not a button/input.
+  const onBarDbl = (e, id) => {
+    if (e.target.closest && e.target.closest('button, label, input, select, a')) return;
+    toggleBar(id);
+  };
+  // Thin collapsed-bar strip with a small grip; double-click to expand.
+  const thinBar = (id, bg) => (
+    <div key={'thin-' + id} onDoubleClick={() => toggleBar(id)}
+         title="Dobbeltklik for at folde bjælken ud igen"
+         className="border-b border-stone-200 flex items-center justify-center cursor-pointer"
+         style={{ backgroundColor: bg, height: 7 }}>
+      <div style={{ width: 32, height: 2, borderRadius: 2, backgroundColor: '#c4bba6' }} />
+    </div>
+  );
   // Pick a category in the add bar and activate the matching tool/mode.
   const selectAddCategory = (cat) => {
     setAddCategory(cat);
@@ -2436,6 +2583,17 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   // Drag node — pointer capture on the SVG root, move/up handled at root level.
   // Runs in (almost) every mode so double-tap edit and dragging work everywhere.
   const startDrag = (e, id) => {
+    // Right-click a node: make sure it's selected (so the context menu can act on
+    // it), then let the event bubble so the canvas opens the menu.
+    if (e.button === 2) {
+      if (!selectedNodesRef.current.includes(id)) {
+        const kind = lNodes[id]?.kind || 'junction';
+        selectedNodesRef.current = [id];
+        setSelectedNodes([id]);
+        setSelectedSeg(null);
+      }
+      return;
+    }
     // While measuring, never grab a node — let the canvas handle the measure drag.
     if (measuring) return;
     // In connect/cable mode a tap (onClick → onNodeTap) picks nodes. Stop the
@@ -2703,10 +2861,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     if (pi) {
       try { svg?.releasePointerCapture?.(e.pointerId); } catch (err) {}
       panInfoRef.current = null;
-      // A right-click without a drag opens the context menu at the cursor.
-      if (pi.rightClick && !movedRef.current) {
-        setCtxMenu({ x: e.clientX, y: e.clientY });
-      }
+      // (Right-click menu is opened reliably via the native onContextMenu event.)
       if (movedRef.current) lastTapRef.current = Date.now();
       return;
     }
@@ -2779,6 +2934,15 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   };
   const newTab = () => {
     commitDraftAndCreate?.(draftSnapshot());
+  };
+  // Close (not delete) a drawing tab. Saves the active draft first so nothing is
+  // lost, then hides the tab. The drawing stays available in the Project menu.
+  const onCloseTab = (e, id) => {
+    e.stopPropagation();
+    if (id === activeProjectId) {
+      try { saveAllDrawings && saveAllDrawings(draftSnapshot()); } catch (err) {}
+    }
+    closeTab?.(id);
   };
 
   // Auto-save: when enabled, push local edits to app state on every change
@@ -3102,6 +3266,27 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     setLCables(lCables.filter(c => c.from !== nid && c.to !== nid));
     setEditNode(null);
   };
+  // Delete every currently-selected object (one or many nodes, or a selected
+  // segment) along with any segments/cables attached to deleted nodes.
+  const deleteSelected = () => {
+    const ids = selectedNodesRef.current.length ? selectedNodesRef.current : selectedNodes;
+    if (ids.length) {
+      const idSet = new Set(ids);
+      const ns = { ...lNodes };
+      ids.forEach(id => delete ns[id]);
+      const sg = Object.fromEntries(Object.entries(lSegs).filter(([_, s]) => !idSet.has(s.from) && !idSet.has(s.to)));
+      setLNodes(ns); setLSegs(sg);
+      setLCables(lCables.filter(c => !idSet.has(c.from) && !idSet.has(c.to)));
+      selectedNodesRef.current = []; setSelectedNodes([]); setEditNode(null);
+      return;
+    }
+    if (selectedSeg && lSegs[selectedSeg]) {
+      const sg = { ...lSegs }; delete sg[selectedSeg];
+      setLSegs(sg);
+      setLCables(lCables.map(c => ({ ...c, route: (c.route || []).filter(r => r !== selectedSeg) })));
+      setSelectedSeg(null);
+    }
+  };
   const renameNode = (oldId, newId) => {
     if (newId === oldId) { setEditNode(null); return; }
     if (lNodes[newId]) { alert(`${newId} eksisterer allerede`); return; }
@@ -3173,126 +3358,142 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
 
   return (
     <div className="fixed inset-0 bg-white z-30 flex flex-col" style={{ touchAction:'none' }}>
-      {/* Header */}
-      <header className="bg-gradient-to-r from-blue-900 to-blue-700 text-white p-3 flex items-center justify-between shadow">
-        <button onClick={cancel} className="px-3 py-1 rounded active:bg-blue-800"><X size={20}/></button>
-        <h2 className="font-bold flex items-center gap-2"><Pencil size={18}/> Tegn anlæg</h2>
-        <div className="flex items-center gap-1">
-          <button onClick={undo} disabled={!canUndo}
-                  className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${canUndo ? 'bg-blue-800/60 active:bg-blue-800' : 'bg-blue-800/20 text-blue-300'}`}
-                  title="Fortryd sidste ændring">
-            <RefreshCw size={14} style={{ transform:'scaleX(-1)' }}/> Fortryd
-          </button>
-          <button onClick={()=>setHideChrome(h=>!h)} className="px-2 py-1.5 rounded text-xs bg-blue-800/60 active:bg-blue-800 flex items-center gap-1" title="Skjul/vis paneler for mere plads">
-            {hideChrome ? <ChevronRight size={14}/> : <X size={14}/>} {hideChrome ? 'Vis' : 'Skjul'}
-          </button>
-          <button onClick={()=>setShowTools(v=>!v)}
-                  className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${showTools ? 'bg-blue-800/60 active:bg-blue-800' : 'bg-blue-800/20 text-blue-300'}`}
-                  title="Vis/skjul værktøjer (grid, zoom, fit, kategorier, legender, ret op …)">
-            <Grid3x3 size={14}/> Værktøjer
-          </button>
-          <button onClick={()=>{ setHideChrome(false); toggleAddPanel(); }}
-                  className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${addPanel ? 'bg-amber-400 text-amber-950' : 'bg-blue-800/60 active:bg-blue-800'}`}
-                  title="Tilføj nyt objekt (føringsveje, tavler, laster, kabler)">
-            <Plus size={14}/> Tilføj nyt objekt
-          </button>
-          <button onClick={()=>{ setHideChrome(false); setBgPanel(p=>!p); }}
-                  className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${bgPanel ? 'bg-emerald-500 text-white' : 'bg-blue-800/60 active:bg-blue-800'}`}
-                  title="Juster tegningsgrundlag (plantegning som baggrund)">
-            <FileText size={14}/> Juster tegningsgrundlag
-          </button>
-          <button onClick={toggleAutoSave}
-                  className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${autoSave ? 'bg-emerald-500 text-white' : 'bg-blue-800/60 active:bg-blue-800'}`}
-                  title={autoSave ? 'Auto-gem er slået til — alt gemmes automatisk' : 'Auto-gem er slået fra — husk at trykke Gem'}>
-            <RefreshCw size={13} className={autoSave ? 'animate-pulse' : ''}/> Auto-gem: {autoSave ? 'TIL' : 'FRA'}
-          </button>
-          <button onClick={save} className="bg-white text-blue-900 px-3 py-1.5 rounded-lg font-semibold text-sm flex items-center gap-1"><Save size={14}/> Gem</button>
-        </div>
-      </header>
-
-      {/* Drawing tabs — switch between open drawings (saves edits automatically) */}
-      {projectList && projectList.length >= 1 && (
-        <div className="bg-blue-800 flex items-stretch overflow-x-auto border-b border-blue-900" style={{ scrollbarWidth:'thin' }}>
-          {projectList.map(p => (
-            <button key={p.id} onClick={()=>switchToTab(p.id)}
-                    className={`px-3 py-2 text-xs whitespace-nowrap border-r border-blue-900/50 flex items-center gap-1.5 ${p.id===activeProjectId ? 'bg-white text-blue-900 font-semibold' : 'text-blue-100 hover:bg-blue-700'}`}>
-              <Pencil size={11}/> {p.name}
-            </button>
-          ))}
+      {/* Drawing tabs — top bar; double-click empty area to collapse */}
+      {openTabs && openTabs.length >= 1 && (
+        collapsedBars.tabs ? thinBar('tabs', '#E9E5D9') : (
+        <div onDoubleClick={(e)=>{ if (e.target === e.currentTarget) toggleBar('tabs'); }}
+             title="Dobbeltklik på et tomt sted i fane-bjælken for at skjule den"
+             className="flex items-stretch overflow-x-auto border-b border-stone-200 py-0.5 select-none" style={{ backgroundColor: '#E9E5D9', scrollbarWidth:'thin' }}>
+          {openTabs.map(tid => {
+            const p = (projectList || []).find(x => x.id === tid);
+            if (!p) return null;
+            return (
+              <div key={p.id} onClick={()=>switchToTab(p.id)}
+                   className={`group pl-3 pr-2 py-1 text-xs whitespace-nowrap border-r border-stone-300/50 flex items-center gap-1.5 cursor-pointer rounded-t-lg ${p.id===activeProjectId ? 'font-semibold' : 'text-stone-600 hover:bg-white/40'}`}
+                   style={p.id===activeProjectId ? { backgroundColor: '#D7D0BC', color: '#44403c' } : undefined}>
+                <Pencil size={11}/> {p.name}
+                {openTabs.length > 1 && (
+                  <button onClick={(e)=>onCloseTab(e, p.id)} title="Luk fane (sletter ikke tegningen)"
+                          className="ml-3 rounded-md p-0.5 hover:bg-stone-300/70 text-stone-500">
+                    <X size={12}/>
+                  </button>
+                )}
+              </div>
+            );
+          })}
           <button onClick={newTab} title="Ny tegning"
-                  className="px-3 py-2 text-xs text-blue-100 hover:bg-blue-700 flex items-center gap-1 shrink-0">
+                  className="px-3 py-1 text-xs text-stone-600 hover:bg-white/50 flex items-center gap-1 shrink-0">
             <Plus size={13}/> Ny
           </button>
         </div>
+        )
       )}
+
+      {/* Header — sits just below the tab bar, same thickness */}
+      {/* Header — double-click to collapse to a thin strip */}
+      {collapsedBars.header ? thinBar('header', '#F4F2EC') : (
+      <header onDoubleClick={(e)=>onBarDbl(e,'header')} title="Dobbeltklik på et tomt sted i bjælken for at skjule den"
+              className="flex items-center gap-1 flex-wrap px-3 py-0.5 shadow-sm border-b border-stone-200/70 select-none"
+              style={{ background: 'linear-gradient(to right, #F4F2EC, #FBFAF6)', color: '#44403c' }}>
+        <label className="px-2 py-1 rounded-lg text-xs flex items-center gap-1 cursor-pointer transition-colors hover:bg-stone-300/30"
+               style={{ backgroundColor: 'transparent', color: '#44403c' }}
+               title="Tilføj PDF eller billede direkte som tegningsgrundlag">
+          <Upload size={14}/> Tilføj
+          <input type="file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/*" onChange={(e)=>{ setBgPanel(true); onBgFile(e); }} style={{ position:'absolute', left:'-9999px', width:1, height:1 }}/>
+        </label>
+        <button onClick={()=>{ setHideChrome(false); toggleAddPanel(); }}
+                className="px-2 py-1 rounded-lg text-xs flex items-center gap-1 transition-colors"
+                style={{ backgroundColor: addPanel ? '#E7E2D4' : 'transparent', color: addPanel ? '#44403c' : '#ccc3b2' }}
+                title="Tilføj nyt objekt (føringsveje, tavler, laster, kabler)">
+          <Plus size={14}/> Tilføj nyt objekt
+        </button>
+        <button onClick={()=>{ setHideChrome(false); setBgPanel(p=>!p); }}
+                className="px-2 py-1 rounded-lg text-xs flex items-center gap-1 transition-colors"
+                style={{ backgroundColor: bgPanel ? '#E7E2D4' : 'transparent', color: bgPanel ? '#44403c' : '#ccc3b2' }}
+                title="Juster tegningsgrundlag (plantegning som baggrund)">
+          <FileText size={14}/> Juster tegningsgrundlag
+        </button>
+        <button onClick={()=>setShowTools(v=>!v)}
+                className="px-2 py-1 rounded-lg text-xs flex items-center gap-1 transition-colors"
+                style={{ backgroundColor: showTools ? '#E7E2D4' : 'transparent', color: showTools ? '#44403c' : '#ccc3b2' }}
+                title="Vis/skjul værktøjer (grid, kategorier, legender, ret op …)">
+          <Grid3x3 size={14}/> Værktøjer
+        </button>
+        <button onClick={toggleAutoSave}
+                className="px-2 py-1 rounded-lg text-xs flex items-center gap-1 transition-colors"
+                style={{ backgroundColor: autoSave ? '#E7E2D4' : 'transparent', color: autoSave ? '#44403c' : '#ccc3b2' }}
+                title={autoSave ? 'Auto-gem er slået til — alt gemmes automatisk' : 'Auto-gem er slået fra'}>
+          <RefreshCw size={13} className={autoSave ? 'animate-pulse' : ''}/> Auto-gem: {autoSave ? 'TIL' : 'FRA'}
+        </button>
+        <button onClick={undo} disabled={!canUndo}
+                className="px-2 py-1 rounded-lg text-xs flex items-center gap-1 transition-colors"
+                style={{ backgroundColor: canUndo ? '#E7E2D4' : 'transparent', color: canUndo ? '#44403c' : '#ccc3b2' }}
+                title="Fortryd sidste ændring">
+          <RefreshCw size={14} style={{ transform:'scaleX(-1)' }}/> Fortryd
+        </button>
+      </header>
+      )}
+
 
       {/* Add-object category bar — only visible when "Tilføj nyt objekt" is active */}
       {addPanel && !hideChrome && (
-        <div className="bg-stone-100 px-3 py-2 flex gap-2 items-center overflow-x-auto border-b">
-          <span className="text-xs font-semibold text-stone-600 shrink-0">Tilføj:</span>
+        collapsedBars.category ? thinBar('category', '#F8F6F0') : (
+        <div onDoubleClick={(e)=>onBarDbl(e,'category')} title="Dobbeltklik på et tomt sted i bjælken for at skjule den"
+             className="px-3 py-1 flex gap-2 items-center overflow-x-auto border-b border-stone-200 select-none" style={{ backgroundColor: '#F8F6F0' }}>
+          <span className="text-xs font-semibold text-stone-500 shrink-0">Tilføj:</span>
           <button onClick={()=>selectAddCategory('trays')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border-2 ${addCategory==='trays' ? 'border-blue-600 bg-white text-blue-900' : 'border-transparent bg-white/70 text-stone-700'}`}>
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border-2 ${addCategory==='trays' ? 'border-stone-500 bg-white text-stone-800' : 'border-transparent bg-white/70 text-stone-600'}`}>
             <GitBranch size={14}/> Føringsveje
           </button>
           <button onClick={()=>selectAddCategory('boards')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border-2 ${addCategory==='boards' ? 'border-blue-600 bg-white text-blue-900' : 'border-transparent bg-white/70 text-stone-700'}`}>
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border-2 ${addCategory==='boards' ? 'border-stone-500 bg-white text-stone-800' : 'border-transparent bg-white/70 text-stone-600'}`}>
             <Database size={14}/> Tavler
           </button>
           <button onClick={()=>selectAddCategory('loads')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border-2 ${addCategory==='loads' ? 'border-blue-600 bg-white text-blue-900' : 'border-transparent bg-white/70 text-stone-700'}`}>
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border-2 ${addCategory==='loads' ? 'border-stone-500 bg-white text-stone-800' : 'border-transparent bg-white/70 text-stone-600'}`}>
             <Zap size={14}/> Laster
           </button>
           <button onClick={()=>selectAddCategory('cables')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border-2 ${addCategory==='cables' ? 'border-blue-600 bg-white text-blue-900' : 'border-transparent bg-white/70 text-stone-700'}`}>
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border-2 ${addCategory==='cables' ? 'border-stone-500 bg-white text-stone-800' : 'border-transparent bg-white/70 text-stone-600'}`}>
             <Cable size={14}/> Kabler
           </button>
         </div>
+        )
       )}
 
-      {/* Navigation & view tools — always available, can be hidden separately */}
-      {showTools && !hideChrome && (
-      <div className="bg-stone-100 p-2 flex gap-1 overflow-x-auto border-b">
-        <button onClick={()=>setShowGrid(g=>!g)} className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${showGrid?'bg-blue-100 text-blue-900':'text-stone-600'}`}><Grid3x3 size={14}/> Grid</button>
-        <button onClick={()=>zoomBy(1/1.25)} className="px-2 py-1.5 rounded text-xs bg-stone-200"><ZoomOut size={14}/></button>
-        <button onClick={()=>zoomBy(1.25)} className="px-2 py-1.5 rounded text-xs bg-stone-200"><ZoomIn size={14}/></button>
-        <button onClick={fitView} className="px-2 py-1.5 rounded text-xs bg-stone-200">Fit</button>
-        <button onClick={()=>setCatPanel(p=>!p)} className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${catPanel?'bg-blue-100 text-blue-900':'bg-stone-200 text-stone-700'}`} title="Farve-kategorier & opacitet"><Layers size={13}/> Kategorier</button>
-        <button onClick={()=>setShowLegends(v=>!v)} className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${showLegends?'bg-blue-100 text-blue-900':'bg-stone-200 text-stone-700'}`} title="Vis/skjul info-bokse på alle føringsveje"><FileText size={13}/> Legender</button>
-        <button onClick={straightenAll} className="px-2 py-1.5 rounded text-xs bg-amber-100 text-amber-900 flex items-center gap-1" title="Ret alle føringsveje op (vinkelret)"><GitBranch size={13}/> Ret alt op</button>
-        <div className="ml-auto">
-          <button onClick={renumber} className="px-2 py-1.5 rounded text-xs bg-purple-100 text-purple-900 flex items-center gap-1" title="Renumber all segments"><RefreshCw size={12}/> WC###</button>
-        </div>
-      </div>
-      )}
+      {/* (Navigation & view tools moved to the bottom, just above the canvas) */}
 
       {/* Føringsvej options — shapes + segment — shown when "Føringsveje" is picked */}
       {addPanel && addCategory === 'trays' && (mode === 'junction' || mode === 'connect') && !hideChrome && (
-        <div className="bg-blue-100/70 border-b border-blue-200 px-3 py-2 flex items-center gap-2 flex-wrap">
-          <span className="text-xs font-semibold text-blue-900 shrink-0">Tilføj:</span>
+        collapsedBars.options ? thinBar('options', '#FBFAF5') : (
+        <div onDoubleClick={(e)=>onBarDbl(e,'options')} title="Dobbeltklik på et tomt sted i bjælken for at skjule den"
+             className="border-b border-stone-200 px-3 py-1 flex items-center gap-2 flex-wrap select-none" style={{ backgroundColor: '#FBFAF5' }}>
+          <span className="text-xs font-semibold text-stone-500 shrink-0">Tilføj:</span>
           {[
-            ['dot', 'Punkt', <svg key="d" width="22" height="22" viewBox="0 0 22 22"><circle cx="11" cy="11" r="6" fill="#fff" stroke="#1565C0" strokeWidth="2"/></svg>],
-            ['tee', 'T-stykke', <svg key="t" width="22" height="22" viewBox="0 0 22 22"><line x1="3" y1="8" x2="19" y2="8" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round"/><line x1="11" y1="8" x2="11" y2="19" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round"/><circle cx="3" cy="8" r="2" fill="#1565C0"/><circle cx="19" cy="8" r="2" fill="#1565C0"/><circle cx="11" cy="19" r="2" fill="#1565C0"/></svg>],
-            ['corner', 'Hjørne', <svg key="c" width="22" height="22" viewBox="0 0 22 22"><polyline points="5,4 5,15 16,15" fill="none" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/><circle cx="5" cy="4" r="2" fill="#1565C0"/><circle cx="16" cy="15" r="2" fill="#1565C0"/></svg>],
-            ['cross', 'Kryds', <svg key="x" width="22" height="22" viewBox="0 0 22 22"><line x1="3" y1="11" x2="19" y2="11" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round"/><line x1="11" y1="3" x2="11" y2="19" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round"/><circle cx="3" cy="11" r="2" fill="#1565C0"/><circle cx="19" cy="11" r="2" fill="#1565C0"/><circle cx="11" cy="3" r="2" fill="#1565C0"/><circle cx="11" cy="19" r="2" fill="#1565C0"/></svg>],
+            ['dot', 'Punkt', <svg key="d" width="22" height="22" viewBox="0 0 22 22"><circle cx="11" cy="11" r="6" fill="#fff" stroke="#8a7f63" strokeWidth="2"/></svg>],
+            ['tee', 'T-stykke', <svg key="t" width="22" height="22" viewBox="0 0 22 22"><line x1="3" y1="8" x2="19" y2="8" stroke="#8a7f63" strokeWidth="2.5" strokeLinecap="round"/><line x1="11" y1="8" x2="11" y2="19" stroke="#8a7f63" strokeWidth="2.5" strokeLinecap="round"/><circle cx="3" cy="8" r="2" fill="#8a7f63"/><circle cx="19" cy="8" r="2" fill="#8a7f63"/><circle cx="11" cy="19" r="2" fill="#8a7f63"/></svg>],
+            ['corner', 'Hjørne', <svg key="c" width="22" height="22" viewBox="0 0 22 22"><polyline points="5,4 5,15 16,15" fill="none" stroke="#8a7f63" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/><circle cx="5" cy="4" r="2" fill="#8a7f63"/><circle cx="16" cy="15" r="2" fill="#8a7f63"/></svg>],
+            ['cross', 'Kryds', <svg key="x" width="22" height="22" viewBox="0 0 22 22"><line x1="3" y1="11" x2="19" y2="11" stroke="#8a7f63" strokeWidth="2.5" strokeLinecap="round"/><line x1="11" y1="3" x2="11" y2="19" stroke="#8a7f63" strokeWidth="2.5" strokeLinecap="round"/><circle cx="3" cy="11" r="2" fill="#8a7f63"/><circle cx="19" cy="11" r="2" fill="#8a7f63"/><circle cx="11" cy="3" r="2" fill="#8a7f63"/><circle cx="11" cy="19" r="2" fill="#8a7f63"/></svg>],
           ].map(([k, label, icon]) => (
             <button key={k} onClick={()=>{ setJunctionShape(k); if (mode !== 'junction') setMode('junction'); }}
-                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border-2 ${mode==='junction' && junctionShape===k ? 'border-blue-600 bg-white' : 'border-transparent bg-white/60'}`}>
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border-2 ${mode==='junction' && junctionShape===k ? 'border-stone-500 bg-white text-stone-800' : 'border-transparent bg-white/60 text-stone-600'}`}>
               {icon} {label}
             </button>
           ))}
-          <div className="border-l border-blue-300 h-6 mx-1"></div>
+          <div className="border-l border-stone-300 h-6 mx-1"></div>
           <button onClick={()=>{ setMode('connect'); setConnectFrom(null); }}
-                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border-2 ${mode==='connect' ? 'border-blue-600 bg-white' : 'border-transparent bg-white/60'}`}>
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border-2 ${mode==='connect' ? 'border-stone-500 bg-white text-stone-800' : 'border-transparent bg-white/60 text-stone-600'}`}>
             <Link2 size={15}/> Tilføj føringsvejssegment
           </button>
           {mode === 'junction' && (
-            <label className="text-xs text-blue-900 flex items-center gap-1 ml-auto shrink-0" title="Størrelse på alle cirkler i hele tegningen">
+            <label className="text-xs text-stone-600 flex items-center gap-1 ml-auto shrink-0" title="Størrelse på alle cirkler i hele tegningen">
               Cirkelstørrelse
               <input type="range" min="3" max="20" value={circleSize} onChange={e=>updateCircleSize(Number(e.target.value))} className="w-20"/>
               <span className="w-7">{circleSize}</span>
             </label>
           )}
         </div>
+        )
       )}
 
       {/* Background adjust panel — opens from the "Juster tegningsgrundlag" header button */}
@@ -3336,10 +3537,10 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
           </div>
 
           {/* Calibration / scale */}
-          <div className="border border-blue-100 rounded-lg p-2 bg-blue-50/40 space-y-1.5">
-            <div className="text-xs font-semibold text-blue-900">Målestok</div>
+          <div className="border border-stone-200 rounded-lg p-2 bg-stone-100/40 space-y-1.5">
+            <div className="text-xs font-semibold text-stone-800">Målestok</div>
             <button onClick={()=>{ setCalibrating(true); setCalibPoints([]); setMeasuring(false); setMeasureResult(null); setBgPanel(false); setBgStatus('Klik to punkter på tegningen med kendt afstand …'); }}
-                    className="w-full text-xs py-2 rounded-lg font-semibold flex items-center justify-center gap-1 bg-blue-600 text-white">
+                    className="w-full text-xs py-2 rounded-lg font-semibold flex items-center justify-center gap-1 bg-stone-700 text-white">
               <MousePointer2 size={13}/> Kalibrér: klik to punkter med kendt afstand
             </button>
             <div className="flex items-center gap-2">
@@ -3348,9 +3549,9 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
                      id="ratioInput"
                      className="flex-1 border border-stone-300 rounded px-2 py-1 text-sm"/>
               <button onClick={()=>{ const v = Number(document.getElementById('ratioInput')?.value); if (v > 0) applyRatio(v); }}
-                      className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-lg font-semibold shrink-0">Anvend</button>
+                      className="text-xs px-3 py-1.5 bg-stone-700 text-white rounded-lg font-semibold shrink-0">Anvend</button>
             </div>
-            {lBg.scaleRatio ? <div className="text-[11px] text-blue-800">Aktivt forhold: 1:{lBg.scaleRatio}</div> : null}
+            {lBg.scaleRatio ? <div className="text-[11px] text-stone-700">Aktivt forhold: 1:{lBg.scaleRatio}</div> : null}
           </div>
 
           {/* Measurement tool — press and drag to measure */}
@@ -3372,7 +3573,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       {catPanel && (
         <div className="bg-white border-b shadow-sm px-3 py-2 max-h-[45vh] overflow-y-auto">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-semibold text-blue-900 flex items-center gap-1"><Layers size={15}/> Føringsvej-netværk</span>
+            <span className="text-sm font-semibold text-stone-800 flex items-center gap-1"><Layers size={15}/> Føringsvej-netværk</span>
             <button onClick={()=>setCatPanel(false)} className="text-xs px-2 py-1 bg-stone-100 rounded">Luk</button>
           </div>
           {colorCategories.length === 0 ? (
@@ -3400,7 +3601,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
                       <span className="text-[11px] text-stone-500">Farve:</span>
                       {palette.map(c => (
                         <button key={c} onClick={()=>setNetworkColor(cat.id, c)}
-                                className={`w-5 h-5 rounded-full border-2 ${cat.color===c ? 'border-blue-900 ring-1 ring-blue-300' : 'border-stone-300'}`}
+                                className={`w-5 h-5 rounded-full border-2 ${cat.color===c ? 'border-stone-800 ring-1 ring-stone-300' : 'border-stone-300'}`}
                                 style={{ background: c }}/>
                       ))}
                       <input type="color" value={/^#/.test(cat.color)?cat.color:'#1565C0'} onChange={e=>setNetworkColor(cat.id, e.target.value)}
@@ -3415,7 +3616,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
                       <span className="w-9 text-right">{Math.round(op*100)}%</span>
                     </label>
                     <button onClick={()=>setCatEdit(cat.id)}
-                            className="w-full mt-1.5 py-1.5 bg-blue-900 text-white rounded text-xs font-semibold flex items-center justify-center gap-1">
+                            className="w-full mt-1.5 py-1.5 bg-stone-800 text-white rounded text-xs font-semibold flex items-center justify-center gap-1">
                       <Edit2 size={12}/> Rediger alle objekter i Net {idx+1}
                     </button>
                   </div>
@@ -3427,8 +3628,33 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         </div>
       )}
 
-      {/* Neutral edit-mode hint */}
-      {!hideChrome && mode === 'edit' && selectedNodes.length === 0 && (
+      {/* Navigation & view tools — at the bottom, just above the canvas */}
+      {showTools && !hideChrome && (
+        collapsedBars.nav ? thinBar('nav', '#F8F6F0') : (
+        <div onDoubleClick={(e)=>onBarDbl(e,'nav')} title="Dobbeltklik på et tomt sted i bjælken for at skjule den"
+             className="px-2 py-0.5 flex gap-1 overflow-x-auto border-t border-b border-stone-200 select-none" style={{ backgroundColor: '#F8F6F0' }}>
+        <button onClick={()=>setShowGrid(g=>!g)}
+                className="px-2 py-1 rounded-lg text-xs flex items-center gap-1 text-stone-600 hover:bg-stone-200/40"
+                style={showGrid ? { backgroundColor: '#D7D0BC', color: '#44403c' } : undefined}><Grid3x3 size={14}/> Grid</button>
+        <button onClick={()=>setCatPanel(p=>!p)}
+                className="px-2 py-1 rounded-lg text-xs flex items-center gap-1 text-stone-600 hover:bg-stone-200/40"
+                style={catPanel ? { backgroundColor: '#D7D0BC', color: '#44403c' } : undefined}
+                title="Farve-kategorier & opacitet"><Layers size={13}/> Kategorier</button>
+        <button onClick={()=>setShowLegends(v=>!v)}
+                className="px-2 py-1 rounded-lg text-xs flex items-center gap-1 text-stone-600 hover:bg-stone-200/40"
+                style={showLegends ? { backgroundColor: '#D7D0BC', color: '#44403c' } : undefined}
+                title="Vis/skjul info-bokse på alle føringsveje"><FileText size={13}/> Legender</button>
+        <button onClick={straightenAll} className="px-2 py-1 rounded-lg text-xs flex items-center gap-1 text-stone-600 hover:bg-stone-200/40" title="Ret alle føringsveje op (vinkelret)"><GitBranch size={13}/> Ret alt op</button>
+        <button onClick={()=>setShowTips(v=>!v)}
+                className="px-2 py-1 rounded-lg text-xs flex items-center gap-1 text-stone-600 hover:bg-stone-200/40"
+                style={showTips ? { backgroundColor: '#D7D0BC', color: '#44403c' } : undefined}
+                title="Vis/skjul hjælpetekst under bjælken"><HelpCircle size={13}/> Tips</button>
+        </div>
+        )
+      )}
+
+      {/* Neutral edit-mode hint — only shown when "Tips" is active */}
+      {showTips && !hideChrome && mode === 'edit' && selectedNodes.length === 0 && (
         <div className="bg-stone-50 text-stone-500 text-[11px] text-center py-1 px-2">
           Rediger-tilstand: klik på objekter for at markere flere · træk for at flytte · dobbeltklik for at redigere · træk på tom flade for at markere et område
         </div>
@@ -3436,7 +3662,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
 
       {/* Help bar — only shows active connect/cable status (warnings, current step) */}
       {!hideChrome && (mode === 'connect' || mode === 'cable') && (
-      <div className="bg-blue-50 text-blue-900 text-xs text-center py-1.5 px-2">
+      <div className="bg-stone-100 text-stone-800 text-xs text-center py-1.5 px-2">
         {mode === 'connect' && (connectFrom ? `→ Tap en anden knude for at forbinde til ${connectFrom}` : '→ Tap første knude/tavle/last')}
         {mode === 'cable' && (cableMsg
           ? `⚠ ${cableMsg}`
@@ -3448,14 +3674,14 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
 
       {/* Multi-select action bar (edit mode) */}
       {selectedNodes.length > 0 && (mode !== 'connect' && mode !== 'cable') && (
-        <div className="bg-blue-900 text-white px-3 py-2 flex items-center gap-2 text-sm">
+        <div className="bg-stone-800 text-white px-3 py-2 flex items-center gap-2 text-sm">
           <span className="font-semibold">{selectedNodes.length} valgt</span>
-          <span className="text-blue-200 text-xs">
+          <span className="text-stone-300 text-xs">
             ({(lNodes[selectedNodes[0]]?.kind || 'junction') === 'board' ? 'tavler' : (lNodes[selectedNodes[0]]?.kind || 'junction') === 'load' ? 'laster' : 'punkter'})
           </span>
           <button onClick={()=>setMultiEdit({ kind: lNodes[selectedNodes[0]]?.kind || 'junction' })}
-                  className="ml-auto bg-white text-blue-900 px-3 py-1.5 rounded-lg font-semibold text-xs">Rediger alle</button>
-          <button onClick={clearSelection} className="bg-blue-800 px-2 py-1.5 rounded-lg text-xs">Ryd</button>
+                  className="ml-auto bg-white text-stone-800 px-3 py-1.5 rounded-lg font-semibold text-xs">Rediger alle</button>
+          <button onClick={clearSelection} className="bg-stone-700 px-2 py-1.5 rounded-lg text-xs">Ryd</button>
         </div>
       )}
 
@@ -3466,7 +3692,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
              className="w-full h-full"
              style={{ cursor: 'crosshair', touchAction:'none', userSelect:'none', WebkitUserSelect:'none', MozUserSelect:'none' }}
              onClick={onCanvasTap}
-             onContextMenu={(e)=>e.preventDefault()}
+             onContextMenu={(e)=>{ e.preventDefault(); if (!movedRef.current) { setCtxSub(null); setCtxMenu({ x: e.clientX, y: e.clientY }); } }}
              onPointerDown={onCanvasPointerDown}
              onPointerMove={onCanvasPointerMove}
              onPointerUp={onCanvasPointerUp}
@@ -3522,7 +3748,9 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
             const segOpacity = s.opacity ?? 1;
             const dash = s.lineStyle === 'dashed' ? '10,6' : s.lineStyle === 'dotted' ? '2,5' : undefined;
             return (
-              <g key={id} onClick={(e)=>onSegTap(e, id)} onDoubleClick={(e)=>onSegDouble(e, id)} style={{ cursor:'pointer', opacity: isSel ? 1 : segOpacity }}>
+              <g key={id} onClick={(e)=>onSegTap(e, id)} onDoubleClick={(e)=>onSegDouble(e, id)}
+                 onContextMenu={(e)=>{ selectedNodesRef.current = []; setSelectedNodes([]); setSelectedSeg(id); }}
+                 style={{ cursor:'pointer', opacity: isSel ? 1 : segOpacity }}>
                 <polyline points={ptsStr} fill="none"
                           stroke={segStroke} strokeWidth={segWidth} strokeLinecap="round" strokeLinejoin="round"
                           strokeDasharray={dash}/>
@@ -3796,8 +4024,8 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
           })}
         </svg>
 
-        {/* Empty state */}
-        {Object.keys(lNodes).length === 0 && (
+        {/* Empty state — hidden as soon as any object is placed */}
+        {Object.keys(lNodes).length === 0 && Object.keys(lSegs).length === 0 && lCables.length === 0 && !lBg && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="text-center text-stone-400 px-6">
               <Pencil size={48} className="mx-auto mb-2 opacity-50"/>
@@ -3848,6 +4076,26 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
             </div>
           );
         })()}
+
+        {/* Calibration status bar — sits at the top of the canvas (below the toolbar) */}
+        {calibrating && (
+          <div className="absolute top-0 left-0 right-0 bg-stone-700 text-white text-xs text-center py-2 px-3 z-20 flex items-center justify-center gap-2">
+            <MousePointer2 size={14}/>
+            {calibPoints.length === 0 ? 'Tap punkt 1 på tegningen' : 'Tap punkt 2 (kendt afstand fra punkt 1)'}
+            <button onClick={()=>{ setCalibrating(false); setCalibPoints([]); setBgStatus(null); }} className="ml-2 underline">Annuller</button>
+          </div>
+        )}
+
+        {/* Measurement status bar — sits at the top of the canvas (below the toolbar) */}
+        {measuring && (
+          <div className="absolute top-0 left-0 right-0 bg-emerald-600 text-white text-xs text-center py-2 px-3 z-20 flex items-center justify-center gap-2">
+            <MousePointer2 size={14}/>
+            {measureResult && measureResult.m > 0
+              ? <span className="font-semibold">Målt afstand: {measureResult.m.toFixed(2)} m — træk igen for ny måling</span>
+              : 'Træk fra punkt A til punkt B for at måle'}
+            <button onClick={()=>{ setMeasuring(false); setMeasureResult(null); measureDragRef.current = null; setBgStatus(null); }} className="ml-2 underline">Luk</button>
+          </div>
+        )}
       </div>
 
       {/* Status footer */}
@@ -3865,7 +4113,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       {pending && (
         <div className="absolute inset-0 bg-black/50 z-10 flex items-end lg:items-center justify-center p-4">
           <div className="bg-white p-4 rounded-2xl w-full lg:max-w-md max-h-[85vh] overflow-y-auto">
-            <h3 className="font-bold mb-3 text-blue-900">Ny føringsvej: {pending.from} → {pending.to}</h3>
+            <h3 className="font-bold mb-3 text-stone-800">Ny føringsvej: {pending.from} → {pending.to}</h3>
             {(() => {
               const a = lNodes[pending.from], b = lNodes[pending.to];
               const isBoardLoad = (a?.kind==='board' && b?.kind==='load') || (b?.kind==='board' && a?.kind==='load');
@@ -3879,7 +4127,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
             <Selector label="Tray type" value={pending.tray_type} onChange={v=>setPending({...pending, tray_type: v})} options={Object.keys(trayTypes)}/>
             <div className="flex gap-2 mt-3">
               <button onClick={()=>setPending(null)} className="flex-1 py-3 border border-stone-300 rounded-lg font-semibold">Annuller</button>
-              <button onClick={confirmPending} className="flex-1 py-3 bg-blue-900 text-white rounded-lg font-semibold">Opret</button>
+              <button onClick={confirmPending} className="flex-1 py-3 bg-stone-800 text-white rounded-lg font-semibold">Opret</button>
             </div>
           </div>
         </div>
@@ -3931,98 +4179,105 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       )}
 
       {/* Calibration in-progress banner */}
-      {calibrating && (
-        <div className="absolute top-0 left-0 right-0 bg-blue-600 text-white text-xs text-center py-2 px-3 z-20 flex items-center justify-center gap-2">
-          <MousePointer2 size={14}/>
-          {calibPoints.length === 0 ? 'Tap punkt 1 på tegningen' : 'Tap punkt 2 (kendt afstand fra punkt 1)'}
-          <button onClick={()=>{ setCalibrating(false); setCalibPoints([]); setBgStatus(null); }} className="ml-2 underline">Annuller</button>
-        </div>
-      )}
-
-      {/* Measurement status / result bar */}
-      {measuring && (
-        <div className="absolute top-0 left-0 right-0 bg-emerald-600 text-white text-xs text-center py-2 px-3 z-20 flex items-center justify-center gap-2">
-          <MousePointer2 size={14}/>
-          {measureResult && measureResult.m > 0
-            ? <span className="font-semibold">Målt afstand: {measureResult.m.toFixed(2)} m — træk igen for ny måling</span>
-            : 'Træk fra punkt A til punkt B for at måle'}
-          <button onClick={()=>{ setMeasuring(false); setMeasureResult(null); measureDragRef.current = null; setBgStatus(null); }} className="ml-2 underline">Luk</button>
-        </div>
-      )}
-
-      {/* Right-click context menu — mirrors the blue bar + view tools, with
-          submenus that open on hover */}
-      {ctxMenu && (
+      {/* Right-click context menu — Windows-style popup with the program's tools,
+          custom design, submenus on hover */}
+      {ctxMenu && (() => {
+        const W = (typeof window!=='undefined'?window.innerWidth:1000);
+        const H = (typeof window!=='undefined'?window.innerHeight:800);
+        const menuW = 248;
+        const left = Math.min(ctxMenu.x, W - menuW - 8);
+        const top = Math.min(ctxMenu.y, H - 430);
+        const subLeft = (left + menuW + 210 > W);  // open submenus to the left if tight
+        const subCls = `absolute ${subLeft ? 'right-full mr-1' : 'left-full ml-1'} top-0 bg-white rounded-xl shadow-2xl ring-1 ring-black/5 border border-stone-100 py-1.5 w-52 overflow-hidden`;
+        const item = "w-full text-left px-3 py-2 flex items-center gap-2.5 hover:bg-stone-100 active:bg-stone-200 transition-colors";
+        return (
         <>
           <div className="fixed inset-0 z-30" onClick={()=>{ setCtxMenu(null); setCtxSub(null); }} onContextMenu={(e)=>{ e.preventDefault(); setCtxMenu(null); setCtxSub(null); }}/>
-          <div className="fixed z-40 bg-white rounded-lg shadow-xl border border-stone-200 py-1 text-sm w-60"
-               style={{ left: Math.min(ctxMenu.x, (typeof window!=='undefined'?window.innerWidth:1000) - 250), top: Math.min(ctxMenu.y, (typeof window!=='undefined'?window.innerHeight:800) - 360) }}
-               onClick={e=>e.stopPropagation()}>
+          <div className="fixed z-40 bg-white rounded-xl shadow-2xl ring-1 ring-black/5 border border-stone-100 py-1.5 text-sm w-62 overflow-visible"
+               style={{ left, top, width: menuW }}
+               onClick={e=>e.stopPropagation()} onContextMenu={e=>{ e.preventDefault(); e.stopPropagation(); }}>
+
+            <div className="px-3 pb-1.5 pt-0.5 text-[10px] font-bold uppercase tracking-wider text-stone-400">Værktøjer</div>
+
+            {/* Delete selected — only when something is selected */}
+            {(selectedNodes.length > 0 || selectedSeg) && (
+              <>
+                <button onClick={()=>{ deleteSelected(); setCtxMenu(null); }} onMouseEnter={()=>setCtxSub(null)}
+                        className={`${item} text-red-600 font-semibold`}>
+                  <Trash2 size={15} className="text-red-600"/>
+                  {selectedNodes.length > 1 ? `Slet ${selectedNodes.length} markerede` : 'Slet markeret'}
+                </button>
+                <div className="border-t border-stone-100 my-1.5 mx-2"></div>
+              </>
+            )}
 
             {/* Tilføj nyt objekt → submenu of categories */}
             <div className="relative" onMouseEnter={()=>setCtxSub('add')}>
-              <button className={`w-full text-left px-3 py-2 flex items-center justify-between gap-2 hover:bg-stone-100 ${ctxSub==='add'?'bg-stone-100':''}`}>
-                <span className="flex items-center gap-2"><Plus size={14}/> Tilføj nyt objekt</span>
+              <button className={`${item} justify-between ${ctxSub==='add'?'bg-stone-100':''}`}>
+                <span className="flex items-center gap-2.5"><Plus size={15} className="text-stone-700"/> Tilføj nyt objekt</span>
                 <ChevronRight size={14} className="text-stone-400"/>
               </button>
               {ctxSub==='add' && (
-                <div className="absolute left-full top-0 -ml-1 bg-white rounded-lg shadow-xl border border-stone-200 py-1 w-52">
-                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('trays'); setHideChrome(false); setCtxMenu(null); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><GitBranch size={14}/> Føringsveje</button>
-                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('boards'); setHideChrome(false); setCtxMenu(null); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><Database size={14}/> Tavler</button>
-                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('loads'); setHideChrome(false); setCtxMenu(null); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><Zap size={14}/> Laster</button>
-                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('cables'); setHideChrome(false); setCtxMenu(null); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><Cable size={14}/> Kabler</button>
+                <div className={subCls}>
+                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('trays'); setHideChrome(false); setCtxMenu(null); }} className={item}><GitBranch size={15} className="text-stone-700"/> Føringsveje</button>
+                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('boards'); setHideChrome(false); setCtxMenu(null); }} className={item}><Database size={15} className="text-stone-700"/> Tavler</button>
+                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('loads'); setHideChrome(false); setCtxMenu(null); }} className={item}><Zap size={15} className="text-stone-700"/> Laster</button>
+                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('cables'); setHideChrome(false); setCtxMenu(null); }} className={item}><Cable size={15} className="text-stone-700"/> Kabler</button>
                 </div>
               )}
             </div>
 
             {/* Visning → submenu of view toggles */}
             <div className="relative" onMouseEnter={()=>setCtxSub('view')}>
-              <button className={`w-full text-left px-3 py-2 flex items-center justify-between gap-2 hover:bg-stone-100 ${ctxSub==='view'?'bg-stone-100':''}`}>
-                <span className="flex items-center gap-2"><Grid3x3 size={14}/> Visning</span>
+              <button className={`${item} justify-between ${ctxSub==='view'?'bg-stone-100':''}`}>
+                <span className="flex items-center gap-2.5"><Grid3x3 size={15} className="text-stone-600"/> Visning</span>
                 <ChevronRight size={14} className="text-stone-400"/>
               </button>
               {ctxSub==='view' && (
-                <div className="absolute left-full top-0 -ml-1 bg-white rounded-lg shadow-xl border border-stone-200 py-1 w-52">
-                  <button onClick={()=>{ setShowGrid(g=>!g); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><Grid3x3 size={14}/> Grid {showGrid?'(til)':'(fra)'}</button>
-                  <button onClick={()=>{ zoomBy(1.25); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><ZoomIn size={14}/> Zoom ind</button>
-                  <button onClick={()=>{ zoomBy(1/1.25); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><ZoomOut size={14}/> Zoom ud</button>
-                  <button onClick={()=>{ fitView(); setCtxMenu(null); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><MousePointer2 size={14}/> Tilpas (Fit)</button>
-                  <button onClick={()=>{ setShowLegends(v=>!v); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><FileText size={14}/> Legender {showLegends?'(til)':'(fra)'}</button>
-                  <button onClick={()=>{ setCatPanel(p=>!p); setCtxMenu(null); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><Layers size={14}/> Kategorier</button>
-                  <button onClick={()=>{ setShowTools(v=>!v); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><Grid3x3 size={14}/> Værktøjslinje {showTools?'skjul':'vis'}</button>
+                <div className={subCls}>
+                  <button onClick={()=>{ setShowGrid(g=>!g); }} className={item}><Grid3x3 size={15} className="text-stone-600"/> Grid <span className="ml-auto text-xs text-stone-400">{showGrid?'til':'fra'}</span></button>
+                  <button onClick={()=>{ zoomBy(1.25); }} className={item}><ZoomIn size={15} className="text-stone-600"/> Zoom ind</button>
+                  <button onClick={()=>{ zoomBy(1/1.25); }} className={item}><ZoomOut size={15} className="text-stone-600"/> Zoom ud</button>
+                  <button onClick={()=>{ fitView(); setCtxMenu(null); }} className={item}><MousePointer2 size={15} className="text-stone-600"/> Tilpas (Fit)</button>
+                  <button onClick={()=>{ setShowLegends(v=>!v); }} className={item}><FileText size={15} className="text-stone-600"/> Legender <span className="ml-auto text-xs text-stone-400">{showLegends?'til':'fra'}</span></button>
+                  <button onClick={()=>{ setCatPanel(p=>!p); setCtxMenu(null); }} className={item}><Layers size={15} className="text-stone-600"/> Kategorier</button>
+                  <button onClick={()=>{ setShowTools(v=>!v); }} className={item}><Grid3x3 size={15} className="text-stone-600"/> Værktøjslinje <span className="ml-auto text-xs text-stone-400">{showTools?'skjul':'vis'}</span></button>
                 </div>
               )}
             </div>
 
-            {/* Tegningsgrundlag */}
+            {/* Tegningsgrundlag + måling */}
             <button onClick={()=>{ setHideChrome(false); setBgPanel(true); setCtxMenu(null); }} onMouseEnter={()=>setCtxSub(null)}
-                    className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><FileText size={14}/> Juster tegningsgrundlag</button>
+                    className={item}><FileText size={15} className="text-emerald-700"/> Juster tegningsgrundlag</button>
+            <button onClick={()=>{ setMeasuring(true); setMeasureResult(null); setCalibrating(false); setBgPanel(false); setCtxMenu(null); }} onMouseEnter={()=>setCtxSub(null)}
+                    className={item}><MousePointer2 size={15} className="text-emerald-700"/> Mål afstand</button>
 
-            <div className="border-t border-stone-100 my-1"></div>
+            <div className="border-t border-stone-100 my-1.5 mx-2"></div>
 
             {/* Direct actions */}
             <button onClick={()=>{ straightenAll(); setCtxMenu(null); }} onMouseEnter={()=>setCtxSub(null)}
-                    className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><GitBranch size={14}/> Ret alt op</button>
+                    className={item}><GitBranch size={15} className="text-amber-600"/> Ret alt op</button>
             <button onClick={()=>{ renumber(); setCtxMenu(null); }} onMouseEnter={()=>setCtxSub(null)}
-                    className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><RefreshCw size={14}/> Nummerér føringsveje (WC###)</button>
+                    className={item}><RefreshCw size={15} className="text-purple-600"/> Nummerér føringsveje</button>
             <button onClick={()=>{ undo(); setCtxMenu(null); }} disabled={!canUndo} onMouseEnter={()=>setCtxSub(null)}
-                    className={`w-full text-left px-3 py-2 flex items-center gap-2 ${canUndo?'hover:bg-stone-100':'text-stone-300'}`}><RefreshCw size={14} style={{ transform:'scaleX(-1)' }}/> Fortryd</button>
+                    className={`${item} ${canUndo?'':'opacity-40 cursor-not-allowed'}`}><RefreshCw size={15} className="text-stone-600" style={{ transform:'scaleX(-1)' }}/> Fortryd</button>
 
-            <div className="border-t border-stone-100 my-1"></div>
+            <div className="border-t border-stone-100 my-1.5 mx-2"></div>
 
             <button onClick={()=>{ toggleAutoSave(); }} onMouseEnter={()=>setCtxSub(null)}
-                    className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><RefreshCw size={14}/> Auto-gem: {autoSave?'TIL':'FRA'}</button>
+                    className={item}><RefreshCw size={15} className={autoSave?'text-emerald-600':'text-stone-500'}/> Auto-gem <span className="ml-auto text-xs text-stone-400">{autoSave?'TIL':'FRA'}</span></button>
             <button onClick={()=>{ save(); }} onMouseEnter={()=>setCtxSub(null)}
-                    className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100 text-blue-900 font-semibold"><Save size={14}/> Gem alt</button>
+                    className={`${item} text-stone-800 font-semibold`}><Save size={15} className="text-stone-700"/> Gem &amp; luk</button>
           </div>
         </>
-      )}
+        );
+      })()}
 
       {/* Calibration distance dialog */}
       {calibDialog && (
         <div className="absolute inset-0 bg-black/50 z-20 flex items-end lg:items-center justify-center p-4">
           <div className="bg-white p-4 rounded-2xl w-full lg:max-w-sm">
-            <h3 className="font-bold mb-2 text-blue-900 flex items-center gap-2"><MousePointer2 size={18}/> Kalibrér målestok</h3>
+            <h3 className="font-bold mb-2 text-stone-800 flex items-center gap-2"><MousePointer2 size={18}/> Kalibrér målestok</h3>
             <p className="text-xs text-stone-500 mb-3">Hvor lang er afstanden mellem de to punkter i virkeligheden?</p>
             <div className="flex items-center gap-2">
               <input id="calib-input" type="number" step="0.1" autoFocus placeholder="fx 5"
@@ -4032,7 +4287,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
             </div>
             <div className="flex gap-2 mt-4">
               <button onClick={()=>{ setCalibDialog(null); setCalibPoints([]); }} className="flex-1 py-3 border border-stone-300 rounded-lg font-semibold">Annuller</button>
-              <button onClick={()=>{ const el=document.getElementById('calib-input'); applyCalibration(Number(el?.value)); }} className="flex-[2] py-3 bg-blue-600 text-white rounded-lg font-semibold">Sæt målestok</button>
+              <button onClick={()=>{ const el=document.getElementById('calib-input'); applyCalibration(Number(el?.value)); }} className="flex-[2] py-3 bg-stone-700 text-white rounded-lg font-semibold">Sæt målestok</button>
             </div>
           </div>
         </div>
@@ -4042,7 +4297,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       {pendingCable && (
         <div className="absolute inset-0 bg-black/50 z-10 flex items-end lg:items-center justify-center p-4">
           <div className="bg-white p-4 rounded-2xl w-full lg:max-w-md max-h-[85vh] overflow-y-auto">
-            <h3 className="font-bold mb-1 text-blue-900 flex items-center gap-2"><Cable size={18}/> Nyt kabel: {pendingCable.from} → {pendingCable.to}</h3>
+            <h3 className="font-bold mb-1 text-stone-800 flex items-center gap-2"><Cable size={18}/> Nyt kabel: {pendingCable.from} → {pendingCable.to}</h3>
             {pendingCable.noPath ? (
               <div className="text-xs bg-amber-50 border border-amber-200 rounded p-2 mb-2 text-amber-900">
                 Ingen føringsvej fundet. Kablet oprettes uden rute — tegn føringsvejene mellem tavlen og lasten først, eller tilføj segmenter til ruten i Cables-fanen.
@@ -4053,7 +4308,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
               </div>
             )}
             {pendingCable.adoptedFromLoad && (
-              <div className="text-xs bg-blue-50 border border-blue-200 rounded p-2 mb-3 text-blue-900">
+              <div className="text-xs bg-stone-100 border border-stone-300 rounded p-2 mb-3 text-stone-800">
                 Kabeldata er automatisk overtaget fra lasten {pendingCable.to} (Ib, In, V, faser, funktion). Tilret om nødvendigt.
               </div>
             )}
@@ -4070,7 +4325,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
             </div>
             <div className="flex gap-2 mt-3">
               <button onClick={()=>setPendingCable(null)} className="flex-1 py-3 border border-stone-300 rounded-lg font-semibold">Annuller</button>
-              <button onClick={confirmPendingCable} className="flex-1 py-3 bg-blue-900 text-white rounded-lg font-semibold">Opret kabel</button>
+              <button onClick={confirmPendingCable} className="flex-1 py-3 bg-stone-800 text-white rounded-lg font-semibold">Opret kabel</button>
             </div>
           </div>
         </div>
@@ -4083,15 +4338,15 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         return (
           <div className="absolute inset-0 bg-black/50 z-10 flex items-end lg:items-center justify-center p-4" onClick={()=>setEditCable(null)}>
             <div className="bg-white p-4 rounded-2xl w-full lg:max-w-md max-h-[85vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
-              <h3 className="font-bold mb-1 text-blue-900 flex items-center gap-2"><Cable size={18}/> {c.id}: {c.from} → {c.to}</h3>
+              <h3 className="font-bold mb-1 text-stone-800 flex items-center gap-2"><Cable size={18}/> {c.id}: {c.from} → {c.to}</h3>
               <div className="text-xs text-stone-500 mb-2">Rute: {(c.route||[]).join(' → ') || '(ingen)'}</div>
 
               {/* Route editing — auto shortest path or manual entry */}
-              <div className="border border-blue-100 bg-blue-50/40 rounded-lg p-2 mb-3">
+              <div className="border border-stone-200 bg-stone-100/40 rounded-lg p-2 mb-3">
                 <div className="flex items-center justify-between mb-1">
-                  <span className="text-xs font-semibold text-blue-900">Føringsvej for kablet</span>
+                  <span className="text-xs font-semibold text-stone-800">Føringsvej for kablet</span>
                   <button onClick={()=>{ const r = findRoute(lSegs, c.from, c.to); updateCable(c.id, { route: r || [] }); }}
-                          className="text-xs px-2 py-1 bg-blue-900 text-white rounded flex items-center gap-1">
+                          className="text-xs px-2 py-1 bg-stone-800 text-white rounded flex items-center gap-1">
                     <RefreshCw size={11}/> Korteste rute
                   </button>
                 </div>
@@ -4120,7 +4375,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
               </div>
               <div className="flex gap-2 mt-3">
                 <button onClick={()=>deleteCable(c.id)} className="flex-1 py-3 bg-red-600 text-white rounded-lg font-semibold flex items-center justify-center gap-1"><Trash2 size={14}/> Slet</button>
-                <button onClick={()=>setEditCable(null)} className="flex-[2] py-3 bg-blue-900 text-white rounded-lg font-semibold">Luk</button>
+                <button onClick={()=>setEditCable(null)} className="flex-[2] py-3 bg-stone-800 text-white rounded-lg font-semibold">Luk</button>
               </div>
             </div>
           </div>
@@ -4132,7 +4387,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
 
 function ToolBtn({ active, onClick, icon: Icon, label }) {
   return (
-    <button onClick={onClick} className={`px-3 py-1.5 rounded text-xs font-semibold flex items-center gap-1 ${active?'bg-blue-900 text-white':'bg-white text-stone-700 border border-stone-300'}`}>
+    <button onClick={onClick} className={`px-3 py-1.5 rounded text-xs font-semibold flex items-center gap-1 ${active?'bg-stone-800 text-white':'bg-white text-stone-700 border border-stone-300'}`}>
       <Icon size={14}/> {label}
     </button>
   );
@@ -4177,11 +4432,11 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
   return (
     <div className="absolute inset-0 bg-black/50 z-10 flex items-end lg:items-center justify-center p-4" onClick={()=>setId(null)}>
       <div className="bg-white p-4 rounded-2xl w-full lg:max-w-md max-h-[85vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
-        <h3 className="font-bold mb-3 text-blue-900">Rediger: {id}</h3>
+        <h3 className="font-bold mb-3 text-stone-800">Rediger: {id}</h3>
 
         <div className="flex gap-1 mb-3">
           {[['junction','Knude'],['board','Tavle'],['load','Last']].map(([k,l]) => (
-            <button key={k} onClick={()=>setKind(k)} className={`flex-1 py-2 rounded text-sm font-semibold ${kind===k?'bg-blue-900 text-white':'bg-stone-100 text-stone-700'}`}>{l}</button>
+            <button key={k} onClick={()=>setKind(k)} className={`flex-1 py-2 rounded text-sm font-semibold ${kind===k?'bg-stone-800 text-white':'bg-stone-100 text-stone-700'}`}>{l}</button>
           ))}
         </div>
 
@@ -4189,7 +4444,7 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
         {nameErr && <p className="text-xs text-red-600 -mt-2 mb-2">{nameErr}</p>}
 
         {kind === 'board' && (
-          <div className="border border-blue-100 rounded-lg p-2 mb-2 space-y-1 bg-blue-50/40">
+          <div className="border border-stone-200 rounded-lg p-2 mb-2 space-y-1 bg-stone-100/40">
             <Selector label="Tavle-type" value={meta.board_type} onChange={v=>setM('board_type', v)} options={['Main board','Sub-board','UPS','Distribution','PDU']}/>
             <FormField label="Hovedbryder In [A]" type="number" value={meta.In_main} onChange={v=>setM('In_main', v)} hint="0 = ikke angivet"/>
           </div>
@@ -4211,13 +4466,13 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
         )}
 
         {kind === 'junction' && (
-          <div className="border border-blue-100 rounded-lg p-2 mb-2 space-y-2 bg-blue-50/40">
+          <div className="border border-stone-200 rounded-lg p-2 mb-2 space-y-2 bg-stone-100/40">
             <div>
               <label className="block text-xs font-semibold text-stone-600 mb-1">Form</label>
               <div className="flex gap-1">
                 {[['dot','Punkt'],['tee','T-stykke'],['corner','Hjørne'],['cross','Kryds']].map(([k,l]) => (
                   <button key={k} onClick={()=>setM('shape', k)}
-                          className={`flex-1 py-2 rounded text-sm font-semibold ${meta.shape===k?'bg-blue-900 text-white':'bg-white border border-stone-300 text-stone-700'}`}>{l}</button>
+                          className={`flex-1 py-2 rounded text-sm font-semibold ${meta.shape===k?'bg-stone-800 text-white':'bg-white border border-stone-300 text-stone-700'}`}>{l}</button>
                 ))}
               </div>
             </div>
@@ -4272,14 +4527,14 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
                   <div className="flex-1 grid grid-cols-4 gap-1">
                     {[0, 90, 180, 270].map(deg => (
                       <button key={deg} onClick={()=>setM('rotation', deg)}
-                              className={`py-2 rounded text-xs font-semibold ${meta.rotation===deg ? 'bg-blue-900 text-white' : 'bg-white border border-stone-300 text-stone-700'}`}>
+                              className={`py-2 rounded text-xs font-semibold ${meta.rotation===deg ? 'bg-stone-800 text-white' : 'bg-white border border-stone-300 text-stone-700'}`}>
                         {deg}°
                       </button>
                     ))}
                   </div>
                 </div>
                 <button onClick={()=>setM('rotation', (meta.rotation + 90) % 360)}
-                        className="w-full mt-1.5 py-1.5 bg-blue-100 text-blue-900 rounded text-xs font-semibold flex items-center justify-center gap-1">
+                        className="w-full mt-1.5 py-1.5 bg-stone-200 text-stone-800 rounded text-xs font-semibold flex items-center justify-center gap-1">
                   <RefreshCw size={12}/> Drej 90°
                 </button>
               </div>
@@ -4305,7 +4560,7 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
             {['', '#1565C0', '#2e7d32', '#c62828', '#f57c00', '#6a1b9a', '#00838f', '#37474F'].map(c => (
               <button key={c||'def'} onClick={()=>setM('color', c)}
                       title={c || 'Standard'}
-                      className={`w-7 h-7 rounded-full border-2 ${meta.color===c ? 'border-blue-900 ring-2 ring-blue-300' : 'border-stone-300'}`}
+                      className={`w-7 h-7 rounded-full border-2 ${meta.color===c ? 'border-stone-800 ring-2 ring-stone-300' : 'border-stone-300'}`}
                       style={{ background: c || 'repeating-linear-gradient(45deg,#fff,#fff 4px,#ddd 4px,#ddd 8px)' }}/>
             ))}
             <input type="color" value={meta.color || '#1565C0'} onChange={e=>setM('color', e.target.value)}
@@ -4316,7 +4571,7 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
         <p className="text-xs text-stone-500 mb-3">Forbundet til {connCount} føringsvej(e){cabCount>0?` og ${cabCount} kabel/kabler`:''}{(connCount>0||cabCount>0)?' — slettes med':''}.</p>
         <div className="flex gap-2">
           <button onClick={()=>deleteNode(id)} className="flex-1 py-3 bg-red-600 text-white rounded-lg font-semibold flex items-center justify-center gap-1 active:scale-95"><Trash2 size={14}/> Slet</button>
-          <button onClick={saveAll} className="flex-[2] py-3 bg-blue-900 text-white rounded-lg font-semibold active:scale-95">Gem</button>
+          <button onClick={saveAll} className="flex-[2] py-3 bg-stone-800 text-white rounded-lg font-semibold active:scale-95">Gem</button>
         </div>
       </div>
     </div>
@@ -4345,12 +4600,12 @@ function MultiEditModal({ kind, ids, close, applyToAll, deleteAll, lNodes, trayT
   return (
     <div className="absolute inset-0 bg-black/50 z-20 flex items-end lg:items-center justify-center p-4" onClick={close}>
       <div className="bg-white p-4 rounded-2xl w-full lg:max-w-lg max-h-[88vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
-        <h3 className="font-bold mb-1 text-blue-900">Rediger {ids.length} {label}</h3>
+        <h3 className="font-bold mb-1 text-stone-800">Rediger {ids.length} {label}</h3>
         <p className="text-xs text-stone-500 mb-3">Klik et objekt for at redigere det individuelt, eller sæt fælles værdier nedenfor (kun udfyldte felter ændres).</p>
 
         {/* Common settings for the whole selection */}
-        <div className="border border-blue-100 bg-blue-50/40 rounded-lg p-2 mb-3 space-y-2">
-          <div className="text-xs font-semibold text-blue-900">Fælles for alle valgte</div>
+        <div className="border border-stone-200 bg-stone-100/40 rounded-lg p-2 mb-3 space-y-2">
+          <div className="text-xs font-semibold text-stone-800">Fælles for alle valgte</div>
 
           {kind === 'junction' && (
             <div>
@@ -4358,7 +4613,7 @@ function MultiEditModal({ kind, ids, close, applyToAll, deleteAll, lNodes, trayT
               <div className="flex gap-1">
                 {[['','—'],['dot','Punkt'],['tee','T-stykke'],['corner','Hjørne'],['cross','Kryds']].map(([k,l]) => (
                   <button key={k||'none'} onClick={()=>setShape(k)}
-                          className={`flex-1 py-1.5 rounded text-xs font-semibold ${shape===k?'bg-blue-900 text-white':'bg-white border border-stone-300 text-stone-700'}`}>{l}</button>
+                          className={`flex-1 py-1.5 rounded text-xs font-semibold ${shape===k?'bg-stone-800 text-white':'bg-white border border-stone-300 text-stone-700'}`}>{l}</button>
                 ))}
               </div>
             </div>
@@ -4394,9 +4649,9 @@ function MultiEditModal({ kind, ids, close, applyToAll, deleteAll, lNodes, trayT
             <div>
               <label className="block text-[11px] text-stone-600 mb-1">Rotation</label>
               <div className="grid grid-cols-5 gap-1">
-                <button onClick={()=>setRotation('')} className={`py-1.5 rounded text-xs font-semibold ${rotation===''?'bg-blue-900 text-white':'bg-white border border-stone-300'}`}>—</button>
+                <button onClick={()=>setRotation('')} className={`py-1.5 rounded text-xs font-semibold ${rotation===''?'bg-stone-800 text-white':'bg-white border border-stone-300'}`}>—</button>
                 {[0,90,180,270].map(d => (
-                  <button key={d} onClick={()=>setRotation(String(d))} className={`py-1.5 rounded text-xs font-semibold ${rotation===String(d)?'bg-blue-900 text-white':'bg-white border border-stone-300'}`}>{d}°</button>
+                  <button key={d} onClick={()=>setRotation(String(d))} className={`py-1.5 rounded text-xs font-semibold ${rotation===String(d)?'bg-stone-800 text-white':'bg-white border border-stone-300'}`}>{d}°</button>
                 ))}
               </div>
             </div>
@@ -4407,7 +4662,7 @@ function MultiEditModal({ kind, ids, close, applyToAll, deleteAll, lNodes, trayT
             <div className="flex items-center gap-1.5 flex-wrap">
               {palette.map(c => (
                 <button key={c||'def'} onClick={()=>setColor(c)} title={c || 'Standard'}
-                        className={`w-6 h-6 rounded-full border-2 ${color===c ? 'border-blue-900 ring-1 ring-blue-300' : 'border-stone-300'}`}
+                        className={`w-6 h-6 rounded-full border-2 ${color===c ? 'border-stone-800 ring-1 ring-stone-300' : 'border-stone-300'}`}
                         style={{ background: c || 'repeating-linear-gradient(45deg,#fff,#fff 4px,#ddd 4px,#ddd 8px)' }}/>
               ))}
               <input type="color" value={color || '#1565C0'} onChange={e=>setColor(e.target.value)}
@@ -4415,7 +4670,7 @@ function MultiEditModal({ kind, ids, close, applyToAll, deleteAll, lNodes, trayT
             </div>
           </div>
 
-          <button onClick={apply} className="w-full py-2 bg-blue-900 text-white rounded-lg text-sm font-semibold">Anvend på alle valgte</button>
+          <button onClick={apply} className="w-full py-2 bg-stone-800 text-white rounded-lg text-sm font-semibold">Anvend på alle valgte</button>
         </div>
 
         {/* Individual objects in the selection */}
@@ -4433,7 +4688,7 @@ function MultiEditModal({ kind, ids, close, applyToAll, deleteAll, lNodes, trayT
                         className="w-full flex items-center gap-2 px-2 py-2 bg-stone-50 hover:bg-stone-100 rounded-lg text-left text-sm">
                   <span className="font-semibold text-stone-700">{id}</span>
                   <span className="text-xs text-stone-500">{detail}</span>
-                  <Edit2 size={13} className="text-blue-700 ml-auto"/>
+                  <Edit2 size={13} className="text-stone-700 ml-auto"/>
                 </button>
               );
             })}
@@ -4442,7 +4697,7 @@ function MultiEditModal({ kind, ids, close, applyToAll, deleteAll, lNodes, trayT
 
         <div className="flex gap-2">
           <button onClick={deleteAll} className="flex-1 py-3 bg-red-600 text-white rounded-lg font-semibold flex items-center justify-center gap-1"><Trash2 size={14}/> Slet alle</button>
-          <button onClick={close} className="flex-[2] py-3 bg-blue-900 text-white rounded-lg font-semibold">Færdig</button>
+          <button onClick={close} className="flex-[2] py-3 bg-stone-800 text-white rounded-lg font-semibold">Færdig</button>
         </div>
       </div>
     </div>
@@ -4460,13 +4715,13 @@ function CategoryEditModal({ net, netIndex, lSegs, lNodes, trayTypes, close, ope
       <div className="bg-white p-4 rounded-2xl w-full lg:max-w-lg max-h-[88vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
         <div className="flex items-center gap-2 mb-1">
           <span className="inline-block w-5 h-5 rounded-full border border-stone-300" style={{ background: net.color }}/>
-          <h3 className="font-bold text-blue-900">Net {netIndex+1} — {segIds.length} føringsveje</h3>
+          <h3 className="font-bold text-stone-800">Net {netIndex+1} — {segIds.length} føringsveje</h3>
         </div>
         <p className="text-xs text-stone-500 mb-3">Redigér hvert objekt individuelt, eller sæt en fælles størrelse for hele netværket.</p>
 
         {/* Common settings for the whole network */}
-        <div className="border border-blue-100 bg-blue-50/40 rounded-lg p-2 mb-3 space-y-2">
-          <div className="text-xs font-semibold text-blue-900">Fælles for hele netværket</div>
+        <div className="border border-stone-200 bg-stone-100/40 rounded-lg p-2 mb-3 space-y-2">
+          <div className="text-xs font-semibold text-stone-800">Fælles for hele netværket</div>
           <div>
             <label className="block text-[11px] text-stone-600 mb-1">Fælles bakkestørrelse (bredde)</label>
             <div className="flex gap-2">
@@ -4477,7 +4732,7 @@ function CategoryEditModal({ net, netIndex, lSegs, lNodes, trayTypes, close, ope
               </select>
               <button onClick={()=>{ if (commonTT) setCommonTrayType(commonTT); }}
                       disabled={!commonTT}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${commonTT?'bg-blue-900 text-white':'bg-stone-200 text-stone-400'}`}>Anvend</button>
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${commonTT?'bg-stone-800 text-white':'bg-stone-200 text-stone-400'}`}>Anvend</button>
             </div>
           </div>
           <div>
@@ -4500,7 +4755,7 @@ function CategoryEditModal({ net, netIndex, lSegs, lNodes, trayTypes, close, ope
                   <span className="font-semibold text-stone-700">{id}</span>
                   <span className="text-xs text-stone-500">{s.from} → {s.to}</span>
                   <span className="text-xs text-stone-400 ml-auto">{w ? `${w} mm` : ''} · {s.length_m} m</span>
-                  <Edit2 size={13} className="text-blue-700"/>
+                  <Edit2 size={13} className="text-stone-700"/>
                 </button>
               );
             })}
@@ -4515,7 +4770,7 @@ function CategoryEditModal({ net, netIndex, lSegs, lNodes, trayTypes, close, ope
               {junctionIds.map(id => (
                 <button key={id} onClick={()=>openNode(id)}
                         className="px-2.5 py-1.5 bg-stone-50 hover:bg-stone-100 rounded-lg text-xs font-semibold text-stone-700 flex items-center gap-1">
-                  {id} <Edit2 size={11} className="text-blue-700"/>
+                  {id} <Edit2 size={11} className="text-stone-700"/>
                 </button>
               ))}
             </div>
@@ -4530,14 +4785,14 @@ function CategoryEditModal({ net, netIndex, lSegs, lNodes, trayTypes, close, ope
               {endpointIds.map(id => (
                 <button key={id} onClick={()=>openNode(id)}
                         className="px-2.5 py-1.5 bg-stone-50 hover:bg-stone-100 rounded-lg text-xs font-semibold text-stone-700 flex items-center gap-1">
-                  {id} <Edit2 size={11} className="text-blue-700"/>
+                  {id} <Edit2 size={11} className="text-stone-700"/>
                 </button>
               ))}
             </div>
           </div>
         )}
 
-        <button onClick={close} className="w-full py-3 bg-blue-900 text-white rounded-lg font-semibold">Færdig</button>
+        <button onClick={close} className="w-full py-3 bg-stone-800 text-white rounded-lg font-semibold">Færdig</button>
       </div>
     </div>
   );
@@ -4553,7 +4808,7 @@ function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addW
   return (
     <div className="absolute inset-0 bg-black/50 z-10 flex items-end lg:items-center justify-center p-4" onClick={()=>setId(null)}>
       <div className="bg-white p-4 rounded-2xl w-full lg:max-w-md max-h-[85vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
-        <h3 className="font-bold mb-3 text-blue-900">Segment {id}</h3>
+        <h3 className="font-bold mb-3 text-stone-800">Segment {id}</h3>
         <p className="text-xs text-stone-500 mb-3">{s.from} → {s.to}</p>
         <FormField label="Længde [m]" type="number" step="0.5" value={length_m} onChange={setL}/>
         <FormField label="Højde / montagekote [mm]" type="number" value={elevation_mm} onChange={setElev} hint="fx 3000 = 3 m over gulv (valgfri)"/>
@@ -4578,7 +4833,7 @@ function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addW
           <div className="flex gap-1">
             {[['solid','Fuld'],['dashed','Stiplet'],['dotted','Prikket']].map(([k,l]) => (
               <button key={k} onClick={()=>setLineStyle(k)}
-                      className={`flex-1 py-2 rounded text-sm font-semibold ${lineStyle===k?'bg-blue-900 text-white':'bg-white border border-stone-300 text-stone-700'}`}>
+                      className={`flex-1 py-2 rounded text-sm font-semibold ${lineStyle===k?'bg-stone-800 text-white':'bg-white border border-stone-300 text-stone-700'}`}>
                 {l}
               </button>
             ))}
@@ -4591,7 +4846,7 @@ function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addW
           <div className="flex items-center gap-2 flex-wrap">
             {['', '#1565C0', '#2e7d32', '#c62828', '#f9a825', '#6a1b9a', '#00838f', '#37474F'].map(c => (
               <button key={c||'def'} onClick={()=>setColor(c)} title={c || 'Auto (fra bredde)'}
-                      className={`w-7 h-7 rounded-full border-2 ${color===c ? 'border-blue-900 ring-2 ring-blue-300' : 'border-stone-300'}`}
+                      className={`w-7 h-7 rounded-full border-2 ${color===c ? 'border-stone-800 ring-2 ring-stone-300' : 'border-stone-300'}`}
                       style={{ background: c || 'repeating-linear-gradient(45deg,#fff,#fff 4px,#ddd 4px,#ddd 8px)' }}/>
             ))}
             <input type="color" value={color || '#1f6feb'} onChange={e=>setColor(e.target.value)}
@@ -4608,7 +4863,7 @@ function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addW
         <div className="flex gap-2 mt-3">
           <button onClick={()=>setId(null)} className="flex-1 py-3 border rounded-lg font-semibold">Annuller</button>
           <button onClick={()=>deleteSeg(id)} className="flex-1 py-3 bg-red-600 text-white rounded-lg font-semibold flex items-center justify-center gap-1"><Trash2 size={14}/> Slet</button>
-          <button onClick={()=>updateSeg(id, { length_m: Number(length_m), tray_type, color: color || undefined, lineStyle, elevation_mm: elevation_mm === '' ? undefined : Number(elevation_mm) })} className="flex-1 py-3 bg-blue-900 text-white rounded-lg font-semibold">Gem</button>
+          <button onClick={()=>updateSeg(id, { length_m: Number(length_m), tray_type, color: color || undefined, lineStyle, elevation_mm: elevation_mm === '' ? undefined : Number(elevation_mm) })} className="flex-1 py-3 bg-stone-800 text-white rounded-lg font-semibold">Gem</button>
         </div>
       </div>
     </div>
@@ -4666,7 +4921,7 @@ function EditModal({ editing, setEditing, cableTypes, trayTypes, transformerType
     <div className="fixed inset-0 bg-black/50 z-20 flex items-end lg:items-center lg:justify-center lg:p-4" onClick={close}>
       <div className="bg-white w-full lg:max-w-2xl lg:rounded-2xl max-h-[85vh] lg:max-h-[90vh] overflow-y-auto rounded-t-2xl p-4 lg:p-6" onClick={e=>e.stopPropagation()}>
         <div className="flex justify-between items-center mb-3">
-          <h2 className="font-bold text-blue-900">{editing.isNew ? 'Add' : 'Edit'} {editing.kind.replace('_',' ')}</h2>
+          <h2 className="font-bold text-stone-800">{editing.isNew ? 'Add' : 'Edit'} {editing.kind.replace('_',' ')}</h2>
           <button onClick={close} className="p-2"><X size={20}/></button>
         </div>
 
@@ -4746,7 +5001,7 @@ function EditModal({ editing, setEditing, cableTypes, trayTypes, transformerType
 
         <div className="flex gap-2 mt-4 sticky bottom-0 bg-white pt-2">
           <button onClick={close} className="flex-1 py-3 border border-stone-300 rounded-lg font-semibold">Annuller</button>
-          <button onClick={save} className="flex-1 py-3 bg-blue-900 text-white rounded-lg font-semibold">Gem</button>
+          <button onClick={save} className="flex-1 py-3 bg-stone-800 text-white rounded-lg font-semibold">Gem</button>
         </div>
       </div>
     </div>
