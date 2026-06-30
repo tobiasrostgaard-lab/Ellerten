@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Plus, Edit2, Trash2, Download, RefreshCw, AlertCircle, CheckCircle, Settings, Cable, Layers, BookOpen, BarChart3, FileDown, Database, X, ChevronRight, Zap, GitBranch, Calculator, Upload, FileText, Save, ZoomIn, ZoomOut, Pencil, Move, Link2, MousePointer2, Grid3x3, HelpCircle, Globe } from 'lucide-react';
+import { Plus, Edit2, Trash2, Download, RefreshCw, AlertCircle, CheckCircle, Settings, Cable, Layers, BookOpen, BarChart3, FileDown, Database, X, ChevronRight, Zap, GitBranch, Calculator, Upload, FileText, Save, ZoomIn, ZoomOut, Pencil, Move, Link2, MousePointer2, Grid3x3, HelpCircle, Globe, Home } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 // =========================
@@ -817,7 +817,7 @@ export default function App() {
   const [nodes, setNodes] = useState({});
   const [cables, setCables] = useState([]);
   const [bgImage, setBgImage] = useState(null);   // { dataUrl, x, y, scale, opacity, name }
-  const [tab, setTab] = useState('trays');
+  const [tab, setTab] = useState('project');
   const [lang, setLang] = useState('da');
   const t = (k) => (I18N[lang] && I18N[lang][k]) || I18N.en[k] || I18N.da[k] || k;
   const isRTL = !!(LANGS.find(l => l.code === lang)?.rtl);
@@ -1197,12 +1197,18 @@ export default function App() {
                     style={{ backgroundColor:'#E7E2D4', color:'#44403c' }}>
               <FileDown size={15}/> {t('exportExcel')}
             </button>
+            {/* Back to start page — always available */}
+            <button onClick={()=>setTab('project')} title="Tilbage til forsiden"
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors hover:brightness-95 ${tab==='project' ? 'opacity-50' : ''}`}
+                    style={{ backgroundColor:'#E7E2D4', color:'#44403c' }}>
+              <Home size={15}/> Forside
+            </button>
           </div>
         </header>
       </div>
 
       <main className="p-3 lg:p-6 lg:max-w-6xl lg:mx-auto space-y-3">
-        {tab === 'project' && <ProjectTab project={project} setProject={setProject} counts={counts} critical={critical} tight={tight} loadTemplate={loadTemplate} clearAll={clearAll} transformerTypes={transformerTypes} exportProjectJSON={exportProjectJSON} fileInputRef={fileInputRef} projectList={projectList} activeProjectId={activeProjectId} switchProject={switchProject} deleteProject={deleteProject} renameProject={renameProject} openNewProject={()=>setNewProjectOpen(true)} />}
+        {tab === 'project' && <ProjectTab project={project} setProject={setProject} counts={counts} critical={critical} tight={tight} loadTemplate={loadTemplate} clearAll={clearAll} transformerTypes={transformerTypes} exportProjectJSON={exportProjectJSON} fileInputRef={fileInputRef} projectList={projectList} activeProjectId={activeProjectId} switchProject={switchProject} deleteProject={deleteProject} renameProject={renameProject} openNewProject={()=>setNewProjectOpen(true)} setTab={setTab} setDrawingOpen={setDrawingOpen} t={t} />}
         {tab === 'cables' && <CablesTab cables={cables} setCables={setCables} cableTypes={cableTypes} segments={segments} A={A} setEditing={setEditing} setSizingOpen={setSizingOpen} exportCablesCSV={exportCablesCSV} csvInputRef={csvInputRef} />}
         {tab === 'trays' && <TraysTab segments={segments} setSegments={setSegments} trayTypes={trayTypes} A={A} setEditing={setEditing} setDrawingOpen={setDrawingOpen} />}
         {tab === 'diagram' && <DiagramTab cables={cables} A={A} project={project} />}
@@ -1257,7 +1263,7 @@ function NewProjectModal({ close, createProject }) {
   );
 }
 
-function ProjectTab({ project, setProject, counts, critical, tight, loadTemplate, clearAll, transformerTypes, exportProjectJSON, fileInputRef, projectList, activeProjectId, switchProject, deleteProject, renameProject, openNewProject }) {
+function ProjectTab({ project, setProject, counts, critical, tight, loadTemplate, clearAll, transformerTypes, exportProjectJSON, fileInputRef, projectList, activeProjectId, switchProject, deleteProject, renameProject, openNewProject, setTab, setDrawingOpen, t }) {
   const update = (k, v) => setProject({ ...project, [k]: v });
   const linkedT = project.transformer ? transformerTypes[project.transformer] : null;
   const activeName = projectList?.find(p => p.id === activeProjectId)?.name ?? '';
@@ -1290,6 +1296,34 @@ function ProjectTab({ project, setProject, counts, critical, tight, loadTemplate
           )}
         </div>
         <p className="text-xs text-stone-400 mt-2">Tap et projektnavn for at redigere det · tap rækken for at skifte projekt</p>
+      </div>
+
+      {/* Workspace launcher — open the program's sections from the start page */}
+      <div className="bg-white p-3 rounded-xl shadow-sm lg:col-span-2">
+        <h2 className="font-bold text-stone-800 mb-2">Åbn arbejdsområde</h2>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+          {/* Føringsveje — the core of the program */}
+          <button onClick={()=> setDrawingOpen ? setDrawingOpen(true) : setTab('trays')}
+                  className="col-span-2 sm:col-span-1 flex flex-col items-start gap-1.5 p-3 rounded-lg text-left transition-transform active:scale-95 hover:brightness-110"
+                  style={{ backgroundColor:'#44403c', color:'#fff' }}>
+            <Layers size={20}/>
+            <span className="text-sm font-semibold">{t ? t('trays') : 'Føringsveje'}</span>
+            <span className="text-[11px] opacity-70">Åbn tegning</span>
+          </button>
+          {[
+            { k:'cables',   label: t ? t('cables') : 'Kabler',     icon:Cable,  hint:'Kabel-liste' },
+            { k:'diagram',  label: t ? t('diagram') : 'Diagram',   icon:GitBranch, hint:'Enstregsskema' },
+            { k:'catalog',  label: t ? t('catalog') : 'Katalog',   icon:BookOpen, hint:'Typer & data' },
+            { k:'analysis', label: t ? t('analysis') : 'Analyse',  icon:BarChart3, hint:'Beregninger' },
+          ].map(({k,label,icon:Icon,hint}) => (
+            <button key={k} onClick={()=>setTab(k)}
+                    className="flex flex-col items-start gap-1.5 p-3 rounded-lg text-left bg-white border border-stone-200 hover:bg-stone-50 hover:border-stone-300 transition-colors active:scale-95">
+              <Icon size={18} className="text-stone-600"/>
+              <span className="text-sm font-semibold text-stone-800">{label}</span>
+              <span className="text-[11px] text-stone-400">{hint}</span>
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="bg-white p-3 rounded-xl shadow-sm lg:col-span-2">
