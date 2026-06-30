@@ -863,31 +863,34 @@ export default function App() {
     (async () => {
       try {
         const idxRaw = await appStorage.get(STORAGE_INDEX);
-        if (idxRaw) {
-          const idx = JSON.parse(idxRaw);
-          const list = idx.projects ?? [];
+        let idx = null;
+        try { idx = idxRaw ? JSON.parse(idxRaw) : null; } catch (e) { idx = null; }
+        if (idx && Array.isArray(idx.projects) && idx.projects.length > 0) {
+          const list = idx.projects;
           setProjectList(list);
-          const activeId = idx.activeId ?? (list[0]?.id ?? null);
+          const validIds = new Set(list.map(p => p.id));
+          const activeId = (idx.activeId && validIds.has(idx.activeId)) ? idx.activeId : list[0].id;
           setActiveProjectId(activeId);
           // Restore which tabs were open; default to just the active drawing.
-          const validIds = new Set(list.map(p => p.id));
           let tabs = (idx.openTabs ?? []).filter(t => validIds.has(t));
           if (activeId && !tabs.includes(activeId)) tabs = [activeId, ...tabs];
           if (tabs.length === 0 && activeId) tabs = [activeId];
           setOpenTabs(tabs);
           if (activeId) {
             const pRaw = await appStorage.get(projKey(activeId));
-            if (pRaw) applyBundle(JSON.parse(pRaw));
+            if (pRaw) { try { applyBundle(JSON.parse(pRaw)); } catch (e) {} }
           }
         } else {
-          // Migration: check for legacy single-project state
+          // No usable index → migrate legacy single-project state or create a fresh drawing.
           const legacy = await appStorage.get('cable_app_state');
           const id = genId();
           let name = 'Tegning 1';
           if (legacy) {
-            const s = JSON.parse(legacy);
-            applyBundle(s);
-            name = (s.project?.site ? `=${s.project.site}+${s.project.location||''}` : 'Tegning 1');
+            try {
+              const s = JSON.parse(legacy);
+              applyBundle(s);
+              name = (s.project?.site ? `=${s.project.site}+${s.project.location||''}` : 'Tegning 1');
+            } catch (e) {}
             await appStorage.set(projKey(id), legacy);
           } else {
             await appStorage.set(projKey(id), JSON.stringify(emptyBundle()));
@@ -903,12 +906,17 @@ export default function App() {
     })();
   }, []);
 
-  // When the drawing editor is open, make sure the active project is an open tab.
+  // When the drawing editor is open, make sure there is an active project and it is an open tab.
   useEffect(() => {
-    if (drawingOpen && activeProjectId) {
+    if (!drawingOpen) return;
+    if (!activeProjectId && projectList.length > 0) {
+      setActiveProjectId(projectList[0].id);
+      return;
+    }
+    if (activeProjectId) {
       setOpenTabs(t => t.includes(activeProjectId) ? t : [...t, activeProjectId]);
     }
-  }, [drawingOpen, activeProjectId]);
+  }, [drawingOpen, activeProjectId, projectList]);
 
   // Persist active project bundle (only when auto-save is on)
   useEffect(() => {
@@ -3592,7 +3600,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
         let tabIds = (openTabs || []).filter(tid => (projectList || []).some(x => x.id === tid));
         if (activeProjectId && !tabIds.includes(activeProjectId)) tabIds = [activeProjectId, ...tabIds];
         if (tabIds.length === 0 && activeProjectId) tabIds = [activeProjectId];
-        if (tabIds.length === 0) return null;
+        // Always render the bar (even with no tabs) so "Ny" and "Forside" stay reachable.
         return collapsedBars.tabs ? thinBar('tabs', '#E9E5D9') : (
         <div onDoubleClick={(e)=>{ if (e.target === e.currentTarget) toggleBar('tabs'); }}
              title="Dobbeltklik på et tomt sted i fane-bjælken for at skjule den"
