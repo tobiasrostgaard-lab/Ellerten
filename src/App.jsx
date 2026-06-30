@@ -761,6 +761,14 @@ export default function App() {
   // Project library: list of { id, name } + the currently active project id
   const [projectList, setProjectList] = useState([]);
   const [activeProjectId, setActiveProjectId] = useState(null);
+  const [autoSave, setAutoSave] = useState(() => {
+    try { return globalThis?.localStorage?.getItem?.('cable_app_autosave') !== 'off'; } catch (e) { return true; }
+  });
+  const toggleAutoSave = () => setAutoSave(v => {
+    const nv = !v;
+    try { globalThis?.localStorage?.setItem?.('cable_app_autosave', nv ? 'on' : 'off'); } catch (e) {}
+    return nv;
+  });
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const fileInputRef = useRef(null);
   const csvInputRef = useRef(null);
@@ -819,14 +827,14 @@ export default function App() {
     })();
   }, []);
 
-  // Persist active project bundle
+  // Persist active project bundle (only when auto-save is on)
   useEffect(() => {
-    if (!loaded || !activeProjectId) return;
+    if (!loaded || !activeProjectId || !autoSave) return;
     const t = setTimeout(() => {
       appStorage.set(projKey(activeProjectId), JSON.stringify({ project, cableTypes, trayTypes, transformerTypes, segments, nodes, cables, bgImage })).catch(()=>{});
     }, 500);
     return () => clearTimeout(t);
-  }, [project, cableTypes, trayTypes, transformerTypes, segments, nodes, cables, bgImage, loaded, activeProjectId]);
+  }, [project, cableTypes, trayTypes, transformerTypes, segments, nodes, cables, bgImage, loaded, activeProjectId, autoSave]);
 
   // Persist the index whenever the list or active id changes
   useEffect(() => {
@@ -910,8 +918,18 @@ export default function App() {
   const commitDraftAndSwitch = async (draft, id) => {
     if (activeProjectId) {
       const bundle = { ...currentBundle(), nodes: draft.nodes, segments: draft.segments, cables: draft.cables, bgImage: draft.bgImage };
-      try { await appStorage.set(projKey(activeProjectId), JSON.stringify(bundle)); } catch (e) {}
-      // also push into live app state so it's consistent if we return
+      // Detect storage-quota failures (e.g. a very large PDF background) so the
+      // background isn't silently lost when leaving the tab.
+      let ok = true;
+      try {
+        const json = JSON.stringify(bundle);
+        try { globalThis.localStorage.setItem(projKey(activeProjectId), json); }
+        catch (quotaErr) { ok = false; }
+        await appStorage.set(projKey(activeProjectId), json);
+      } catch (e) { ok = false; }
+      if (!ok) {
+        try { globalThis.alert('Tegningsgrundlaget er for stort til at blive gemt i denne fane (browserens lagergrænse). Prøv en mindre/komprimeret PDF, eller fjern grundlaget før du skifter fane.'); } catch (e) {}
+      }
       applyBundle(bundle);
     }
     if (id && id !== activeProjectId) {
@@ -935,6 +953,18 @@ export default function App() {
     setProjectList([...projectList, { id, name: name || `Tegning ${projectList.length + 1}` }]);
     setActiveProjectId(id);
     applyBundle(fresh);
+  };
+
+  // Save every drawing: commit the active draft into its project, plus re-persist
+  // the index. The other drawings are already saved (they're flushed on tab switch),
+  // so this guarantees the whole set is on disk after pressing Gem.
+  const saveAllDrawings = async (draft) => {
+    if (activeProjectId) {
+      const bundle = { ...currentBundle(), nodes: draft.nodes, segments: draft.segments, cables: draft.cables, bgImage: draft.bgImage };
+      try { await appStorage.set(projKey(activeProjectId), JSON.stringify(bundle)); } catch (e) {}
+      applyBundle(bundle);
+    }
+    try { await appStorage.set(STORAGE_INDEX, JSON.stringify({ projects: projectList, activeId: activeProjectId })); } catch (e) {}
   };
 
   const deleteProject = async (id) => {
@@ -1066,7 +1096,7 @@ export default function App() {
       {editing && <EditModal editing={editing} setEditing={setEditing} cableTypes={cableTypes} trayTypes={trayTypes} transformerTypes={transformerTypes} segments={segments} setCables={setCables} setSegments={setSegments} setCableTypes={setCableTypes} setTrayTypes={setTrayTypes} setTransformerTypes={setTransformerTypes} cables={cables} />}
       {sizingOpen && <SizingModal close={() => setSizingOpen(false)} project={project} cableTypes={cableTypes} segments={segments} cables={cables} setCables={setCables} />}
       {drawingOpen && <DrawingModal key={activeProjectId} close={() => setDrawingOpen(false)} segments={segments} setSegments={setSegments} nodes={nodes} setNodes={setNodes} trayTypes={trayTypes} cables={cables} setCables={setCables} cableTypes={cableTypes} bgImage={bgImage} setBgImage={setBgImage} project={project}
-        projectList={projectList} activeProjectId={activeProjectId} commitDraftAndSwitch={commitDraftAndSwitch} commitDraftAndCreate={commitDraftAndCreate} />}
+        projectList={projectList} activeProjectId={activeProjectId} commitDraftAndSwitch={commitDraftAndSwitch} commitDraftAndCreate={commitDraftAndCreate} saveAllDrawings={saveAllDrawings} autoSave={autoSave} toggleAutoSave={toggleAutoSave} />}
       {newProjectOpen && <NewProjectModal close={() => setNewProjectOpen(false)} createProject={createProject} />}
     </div>
   );
@@ -1775,7 +1805,7 @@ function AnalysisTab({ cables, A, cableTypes, segments }) {
 // =========================
 // DRAWING MODAL — interactive cable tray layout editor
 // =========================
-function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project, projectList, activeProjectId, commitDraftAndSwitch, commitDraftAndCreate }) {
+function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project, projectList, activeProjectId, commitDraftAndSwitch, commitDraftAndCreate, saveAllDrawings, autoSave, toggleAutoSave }) {
   // local working state
   // Node shape: { x, y, kind: 'junction'|'board'|'load', ...meta }
   //   board meta: { board_type, In_main }
@@ -1815,12 +1845,62 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   // Opacity per colour category (hex → 0..1) — mirrors per-segment opacity for the slider UI.
   const [catPanel, setCatPanel] = useState(false);            // show network-category panel
   const [showLegends, setShowLegends] = useState(false);      // show per-segment info legends
+  const [addPanel, setAddPanel] = useState(false);            // "Tilføj nyt objekt" category bar open
+  const [addCategory, setAddCategory] = useState(null);       // 'trays'|'boards'|'loads'|'cables'
+  const [showTools, setShowTools] = useState(true);           // show/hide the view/navigation toolbar
+  const [ctxMenu, setCtxMenu] = useState(null);               // right-click context menu {x,y} in screen px
+  const [ctxSub, setCtxSub] = useState(null);                 // which submenu is hovered open
   const [catEdit, setCatEdit] = useState(null);               // network id whose objects are being edited
-  const [bgLocked, setBgLocked] = useState(() => bgImage?.locked || false);  // lock background scale/position
+  // Background images keep no lock flag — placed objects always stay fixed at
+  // their world position regardless of how the background is scaled or moved.
   const [calibrating, setCalibrating] = useState(false);  // two-point scale calibration in progress
   const [calibPoints, setCalibPoints] = useState([]);     // world points clicked during calibration
+  const [measuring, setMeasuring] = useState(false);      // measurement (press-drag) active
+  const [measureResult, setMeasureResult] = useState(null); // {m, points:[p0,p1]}
+  const measureDragRef = useRef(null);                       // active measure drag {x0,y0,pointerId}
+  const measuringRef = useRef(false);                        // mirror of `measuring` for stable closures
+  useEffect(() => { measuringRef.current = measuring; }, [measuring]);
+
+  // Measurement uses window-level listeners while dragging, so the live line and
+  // final result are captured no matter what the cursor passes over or which way
+  // it is dragged — fully independent of SVG pointer-capture quirks. We call the
+  // latest toSvg via a ref so the second (and later) measurements never use a
+  // stale coordinate transform.
+  const toSvgRef = useRef(null);
+  useEffect(() => {
+    if (!measuring) return;
+    const onMove = (e) => {
+      const md = measureDragRef.current;
+      if (!md || !toSvgRef.current) return;
+      // Stop the browser from selecting text/labels while dragging a measurement.
+      if (e.cancelable) e.preventDefault();
+      try { window.getSelection?.()?.removeAllRanges?.(); } catch (err) {}
+      const p = toSvgRef.current(e.clientX, e.clientY);
+      const px = Math.hypot(p.x - md.x0, p.y - md.y0);
+      setMeasureResult({ m: px / PX_PER_M, points: [{ x: md.x0, y: md.y0 }, { x: p.x, y: p.y }] });
+    };
+    const onUp = (e) => {
+      const md = measureDragRef.current;
+      if (!md || !toSvgRef.current) return;
+      measureDragRef.current = null;
+      const p = toSvgRef.current(e.clientX, e.clientY);
+      const px = Math.hypot(p.x - md.x0, p.y - md.y0);
+      const meters = px / PX_PER_M;
+      if (px < 3) { setMeasureResult(null); setBgStatus('Måling: træk fra punkt A til punkt B.'); return; }
+      setMeasureResult({ m: meters, points: [{ x: md.x0, y: md.y0 }, { x: p.x, y: p.y }] });
+      setBgStatus(`Målt afstand: ${meters.toFixed(2)} m`);
+    };
+    window.addEventListener('pointermove', onMove, { passive: false });
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+  }, [measuring]);
   const [calibDialog, setCalibDialog] = useState(null);   // { pixelDist } awaiting real distance input
-  const [mode, setMode] = useState('junction'); // 'junction'|'board'|'load'|'connect'|'cable'|'edit'|'bg'
+  const [mode, setMode] = useState('edit'); // 'edit'(neutral)|'junction'|'board'|'load'|'connect'|'cable'
   const [connectFrom, setConnectFrom] = useState(null);
   const [cableFrom, setCableFrom] = useState(null);  // start node for cable routing
   const [cableMsg, setCableMsg] = useState(null);    // guidance/error in cable mode
@@ -1841,6 +1921,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const svgRef = useRef(null);
   const lastTapRef = useRef(0);
   const nodeTapRef = useRef({ id: null, t: 0 });   // double-tap detection on nodes
+  const nodeJustTappedRef = useRef(false);          // set on node tap so canvas-tap skips placing
   const segTapRef = useRef({ id: null, t: 0 });    // double-tap detection on segments
   const movedRef = useRef(false);
   const dragInfoRef = useRef(null);  // { id, offsetX, offsetY, pointerId }
@@ -1894,17 +1975,21 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         return { x: sp.x, y: sp.y };
       }
     } catch (err) {}
-    // Fallback: proportional mapping
+    // Fallback: meet scaling with centering (letterbox-aware), matching pan math
     const r = svg.getBoundingClientRect();
-    const vbW = bounds.w, vbH = bounds.h;
-    const sx = r.width > 0 ? (clientX - r.left) / r.width : 0;
-    const sy = r.height > 0 ? (clientY - r.top) / r.height : 0;
-    return { x: bounds.x + sx * vbW, y: bounds.y + sy * vbH };
+    const scale = Math.min(r.width / bounds.w, r.height / bounds.h) || 1;
+    const drawnW = bounds.w * scale, drawnH = bounds.h * scale;
+    const offX = (r.width - drawnW) / 2, offY = (r.height - drawnH) / 2;
+    return {
+      x: bounds.x + (clientX - r.left - offX) / scale,
+      y: bounds.y + (clientY - r.top - offY) / scale,
+    };
   };
   const getPoint = (e) => {
     const t = e.touches?.[0] || e.changedTouches?.[0];
     return toSvg(t ? t.clientX : e.clientX, t ? t.clientY : e.clientY);
   };
+  toSvgRef.current = toSvg;   // window measure listeners always call the latest transform
   const distM = (a, b) => Math.max(0.5, Math.round(Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2) / PX_PER_M * 2) / 2);
 
   // Canvas pointer down — track pointers, start pan (1 finger) or gesture (2 fingers)
@@ -1933,8 +2018,26 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     // Track every pointer for multi-touch
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
+    // Measurement has top priority: a press starts/replaces a measure drag.
+    // Window-level listeners (see effect above) handle move/up, so this is
+    // direction- and element-proof. Reset every other interaction first.
+    if (measuring && (e.button === 0 || e.pointerType !== 'mouse')) {
+      gestureRef.current = null;
+      panInfoRef.current = null;
+      dragInfoRef.current = null;
+      marqueeRef.current = null; setMarquee(null);
+      setDragging(null);
+      pointersRef.current.clear();
+      const p = getPoint(e);
+      measureDragRef.current = { x0: p.x, y0: p.y, pointerId: e.pointerId };
+      setMeasureResult({ m: 0, points: [{ x: p.x, y: p.y }, { x: p.x, y: p.y }] });
+      movedRef.current = true;   // suppress the click that follows the drag
+      return;
+    }
+
     // Two fingers down → start pinch/pan gesture, cancel any single-finger action
-    if (pointersRef.current.size === 2) {
+    // (never while measuring — measuring is strictly single-pointer)
+    if (pointersRef.current.size === 2 && !measuring && !measureDragRef.current) {
       const pts = Array.from(pointersRef.current.values());
       const dx = pts[0].x - pts[1].x, dy = pts[0].y - pts[1].y;
       const dist = Math.hypot(dx, dy) || 1;
@@ -1953,8 +2056,11 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     }
     if (pointersRef.current.size > 2) return;
 
-    // Single finger in select mode → start a rubber-band marquee
-    if (mode === 'select') {
+    // Left-button drag on empty canvas → rubber-band marquee.
+    // Never start one on top of a shape, and not while wiring (connect/cable),
+    // where taps pick nodes.
+    const onShape = ['circle','rect','polygon','line','text','polyline','image'].includes(e.target?.tagName);
+    if (!onShape && mode !== 'connect' && mode !== 'cable' && (e.button === 0 || e.pointerType !== 'mouse')) {
       const svg = svgRef.current;
       try { svg?.setPointerCapture?.(e.pointerId); } catch (err) {}
       const p = getPoint(e);
@@ -1963,35 +2069,46 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       movedRef.current = false;
       return;
     }
-
-    // Single finger in pan mode → start a pan
-    if (mode !== 'pan') return;
-    if (e.target.tagName === 'circle' || e.target.tagName === 'rect' || e.target.tagName === 'polygon') return;
-    const svg = svgRef.current;
-    try { svg?.setPointerCapture?.(e.pointerId); } catch (err) {}
-    const r = svg.getBoundingClientRect();
-    // SVG uses default preserveAspectRatio "xMidYMid meet": the scale is uniform
-    // and equals the smaller of the two axis fits. world-per-px is the same on both axes.
-    const scale = Math.min(r.width / bounds.w, r.height / bounds.h) || 1;
-    const worldPerPx = scale > 0 ? 1 / scale : 1;
-    panInfoRef.current = {
-      startClientX: e.clientX, startClientY: e.clientY,
-      startView: { ...bounds },
-      worldPerPxX: worldPerPx, worldPerPxY: worldPerPx,
-      pointerId: e.pointerId,
-    };
-    movedRef.current = false;
   };
 
   // Switch tool mode and clear any in-progress selections
   const switchMode = (m) => {
-    setMode(m);
+    // Toggle: clicking the already-active tool turns it off and returns to the
+    // neutral 'edit' mode (select / move / edit, no placement).
+    // "Tilføj nyt objekt" covers both junction placement and connect, so clicking
+    // it while in either of those turns the whole tool off.
+    const inAddTool = (mode === 'junction' || mode === 'connect');
+    const next = (m === mode || (m === 'junction' && inAddTool)) ? 'edit' : m;
+    setMode(next);
     setConnectFrom(null);
     setCableFrom(null);
     setCableMsg(null);
     marqueeRef.current = null; setMarquee(null);
-    // Keep the selection when moving between edit and select; clear it otherwise
-    if (m !== 'edit' && m !== 'select') { selectedNodesRef.current = []; setSelectedNodes([]); setSelectedSeg(null); }
+    // Clear selection when entering a placement/wiring tool; keep it in edit mode
+    if (next !== 'edit') { selectedNodesRef.current = []; setSelectedNodes([]); setSelectedSeg(null); }
+  };
+
+  // "Tilføj nyt objekt" (header button): open/close the category bar. Closing it
+  // returns to the neutral edit mode.
+  const toggleAddPanel = () => {
+    if (addPanel) {
+      setAddPanel(false);
+      setAddCategory(null);
+      switchMode('edit');
+    } else {
+      setAddPanel(true);
+    }
+  };
+  // Pick a category in the add bar and activate the matching tool/mode.
+  const selectAddCategory = (cat) => {
+    setAddCategory(cat);
+    if (cat === 'trays') setMode('junction');        // shapes + føringsvejssegment
+    else if (cat === 'boards') setMode('board');
+    else if (cat === 'loads') setMode('load');
+    else if (cat === 'cables') setMode('cable');
+    setConnectFrom(null); setCableFrom(null); setCableMsg(null);
+    marqueeRef.current = null; setMarquee(null);
+    selectedNodesRef.current = []; setSelectedNodes([]); setSelectedSeg(null);
   };
 
   // Multi-select: add/remove a node, but only within one category (kind).
@@ -2092,41 +2209,33 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   // of segment IDs. Uses a simple pass: for each segment, if it's closer to horizontal,
   // average the Y of its two endpoints; if vertical, average the X.
   const straightenSegments = (segIds) => {
+    const ids = (segIds || []).filter(id => lSegs[id]);
+    if (ids.length === 0) return;
     setLNodes(prevNodes => {
       const nodes = { ...prevNodes };
-      const settled = new Set();   // nodes already pinned by an earlier segment
-      // Process segments in order; for each, make it horizontal or vertical by
-      // moving the not-yet-settled end onto the settled end's axis. If both ends
-      // are free, move them to their shared midpoint axis.
-      segIds.forEach(id => {
-        const s = lSegs[id];
-        if (!s) return;
-        const a = nodes[s.from], b = nodes[s.to];
-        if (!a || !b) return;
-        const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y);
-        const horizontal = dx >= dy;   // closer to horizontal → make it horizontal
-        const aSettled = settled.has(s.from);
-        const bSettled = settled.has(s.to);
-        if (horizontal) {
-          // share a common Y
-          let y;
-          if (aSettled && !bSettled) y = a.y;
-          else if (bSettled && !aSettled) y = b.y;
-          else y = Math.round((a.y + b.y) / 2);
-          nodes[s.from] = { ...nodes[s.from], y };
-          nodes[s.to] = { ...nodes[s.to], y };
-        } else {
-          // share a common X
-          let x;
-          if (aSettled && !bSettled) x = a.x;
-          else if (bSettled && !aSettled) x = b.x;
-          else x = Math.round((a.x + b.x) / 2);
-          nodes[s.from] = { ...nodes[s.from], x };
-          nodes[s.to] = { ...nodes[s.to], x };
-        }
-        settled.add(s.from);
-        settled.add(s.to);
-      });
+      // Several passes let shared nodes settle into consistent axis-aligned
+      // positions across a connected network instead of locking too early.
+      const PASSES = 4;
+      for (let pass = 0; pass < PASSES; pass++) {
+        ids.forEach(id => {
+          const s = lSegs[id];
+          if (!s) return;
+          const a = nodes[s.from], b = nodes[s.to];
+          if (!a || !b) return;
+          const dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y);
+          if (dx >= dy) {
+            // make horizontal → share a common Y (midpoint)
+            const y = Math.round((a.y + b.y) / 2);
+            nodes[s.from] = { ...nodes[s.from], y };
+            nodes[s.to] = { ...nodes[s.to], y };
+          } else {
+            // make vertical → share a common X (midpoint)
+            const x = Math.round((a.x + b.x) / 2);
+            nodes[s.from] = { ...nodes[s.from], x };
+            nodes[s.to] = { ...nodes[s.to], x };
+          }
+        });
+      }
       return nodes;
     });
   };
@@ -2195,6 +2304,9 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
 
   // Canvas tap — place node of the active kind
   const onCanvasTap = (e) => {
+    // If the click landed on an existing node, it was handled as a selection;
+    // never place a new object on top of it.
+    if (nodeJustTappedRef.current) { nodeJustTappedRef.current = false; return; }
     // Debounce: ignore a second event within 300ms (touch fires touchend + click)
     const now = Date.now();
     if (now - lastTapRef.current < 300) return;
@@ -2236,8 +2348,9 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const onNodeTap = (e, id) => {
     e.stopPropagation();
     if (movedRef.current) { movedRef.current = false; setMoved(false); return; }
-    // Edit mode is handled in pointer-up (click events are unreliable with pointer capture)
-    if (mode === 'edit') return;
+    // Tap/double-tap (select, edit) is handled in pointer-up, which is reliable
+    // with pointer capture. Only connect/cable wiring is handled here.
+    if (mode !== 'connect' && mode !== 'cable') return;
     if (mode === 'connect') {
       if (!connectFrom) setConnectFrom(id);
       else if (connectFrom === id) setConnectFrom(null);
@@ -2292,21 +2405,23 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     }
   };
 
-  // Double-click opens the editor — only in edit mode (mouse)
+  // Double-click opens the editor in any mode (mouse)
   const onNodeDouble = (e, id) => {
     e.stopPropagation();
-    if (mode === 'edit') setEditNode(id);
+    const sel = selectedNodesRef.current;
+    if (sel.length > 1 && sel.includes(id)) setMultiEdit({ kind: lNodes[sel[0]]?.kind || 'junction' });
+    else setEditNode(id);
   };
   const onSegDouble = (e, id) => {
     e.stopPropagation();
-    if (mode === 'edit') setEditSeg(id);
+    setEditSeg(id);
   };
 
   const onSegTap = (e, id) => {
     e.stopPropagation();
     if (movedRef.current) { movedRef.current = false; return; }
-    if (mode !== 'edit') return;
-    // Double-tap/double-click opens the edit dialog
+    if (mode === 'connect' || mode === 'cable') return;
+    // Double-tap/double-click opens the edit dialog (any mode)
     const now = Date.now();
     if (segTapRef.current.id === id && now - segTapRef.current.t < 350) {
       segTapRef.current = { id: null, t: 0 };
@@ -2319,11 +2434,14 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   };
 
   // Drag node — pointer capture on the SVG root, move/up handled at root level.
-  // Runs in every mode so double-tap/edit works everywhere; only actually moves
-  // the node when in edit mode (canMove).
+  // Runs in (almost) every mode so double-tap edit and dragging work everywhere.
   const startDrag = (e, id) => {
-    // In connect/cable mode, let the tap handler pick nodes instead
-    if (mode === 'connect' || mode === 'cable') return;
+    // While measuring, never grab a node — let the canvas handle the measure drag.
+    if (measuring) return;
+    // In connect/cable mode a tap (onClick → onNodeTap) picks nodes. Stop the
+    // pointer-down from bubbling so the canvas doesn't start a marquee/capture
+    // the pointer (which would swallow the node's click).
+    if (mode === 'connect' || mode === 'cable') { e.stopPropagation(); return; }
     e.stopPropagation();
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     // If a second finger is already down, let the gesture handler take over
@@ -2331,7 +2449,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     const svg = svgRef.current;
     try { svg?.setPointerCapture?.(e.pointerId); } catch (err) {}
     const p = getPoint(e);
-    dragInfoRef.current = { id, offsetX: p.x - lNodes[id].x, offsetY: p.y - lNodes[id].y, startX: p.x, startY: p.y, startClientX: e.clientX, startClientY: e.clientY, pointerId: e.pointerId, canMove: mode === 'edit' };
+    dragInfoRef.current = { id, offsetX: p.x - lNodes[id].x, offsetY: p.y - lNodes[id].y, startX: p.x, startY: p.y, startClientX: e.clientX, startClientY: e.clientY, pointerId: e.pointerId, canMove: true };
     movedRef.current = false;
     setDragging(id);
   };
@@ -2382,7 +2500,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
 
     // Two-finger gesture: pinch-zoom + pan (highest priority)
     const g = gestureRef.current;
-    if (g && pointersRef.current.size >= 2) {
+    if (g && !measuring && !measureDragRef.current && pointersRef.current.size >= 2) {
       const pts = Array.from(pointersRef.current.values());
       const dx = pts[0].x - pts[1].x, dy = pts[0].y - pts[1].y;
       const dist = Math.hypot(dx, dy) || 1;
@@ -2474,6 +2592,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   };
   const onCanvasPointerUp = (e) => {
     const svg = svgRef.current;
+    // (Measurement up is handled by window-level listeners.)
     // Finish a rubber-band marquee: select all same-category nodes inside the box
     if (marqueeRef.current && marqueeRef.current.pointerId === e.pointerId) {
       const m = marqueeRef.current;
@@ -2514,20 +2633,6 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     // End gesture when fewer than 2 fingers remain
     if (gestureRef.current && pointersRef.current.size < 2) {
       gestureRef.current = null;
-      // If one finger remains, re-seed it as a fresh pan start so it doesn't jump
-      if (pointersRef.current.size === 1 && mode === 'pan') {
-        const [remaining] = Array.from(pointersRef.current.values());
-        const r = svg.getBoundingClientRect();
-        const scale = Math.min(r.width / bounds.w, r.height / bounds.h) || 1;
-        const wpp = scale > 0 ? 1 / scale : 1;
-        panInfoRef.current = {
-          startClientX: remaining.x, startClientY: remaining.y,
-          startView: { ...bounds },
-          worldPerPxX: wpp,
-          worldPerPxY: wpp,
-          pointerId: null,
-        };
-      }
       try { svg?.releasePointerCapture?.(e.pointerId); } catch (err) {}
       lastTapRef.current = Date.now();
       return;
@@ -2557,27 +2662,51 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         const isDouble = nodeTapRef.current.id === di.id && now - nodeTapRef.current.t < 400;
         if (isDouble) {
           nodeTapRef.current = { id: null, t: 0 };
-          // Double-tap: edit. If part of a multi-selection, edit all together.
+          // Double-tap opens the editor in ANY mode. If the node is part of a
+          // multi-selection, edit all selected objects together.
           const sel = selectedNodesRef.current;
-          if (mode === 'edit' && sel.length > 1 && sel.includes(di.id)) {
+          if (sel.length > 1 && sel.includes(di.id)) {
             setMultiEdit({ kind: lNodes[sel[0]]?.kind || 'junction' });
           } else {
             setEditNode(di.id);
           }
         } else {
           nodeTapRef.current = { id: di.id, t: now };
-          // Single tap in edit mode toggles multi-select membership (no upper limit)
-          if (mode === 'edit') toggleSelectNode(di.id);
+          if (mode === 'edit') {
+            // Neutral edit mode: clicking objects one by one builds up a
+            // multi-selection (same-category rule applies). Clicking an already
+            // selected object removes it again.
+            toggleSelectNode(di.id);
+          } else if (mode !== 'connect' && mode !== 'cable') {
+            // Placement modes: a plain click selects just that object;
+            // shift-click toggles membership.
+            const prev = selectedNodesRef.current;
+            if (e.shiftKey) {
+              toggleSelectNode(di.id);
+            } else if (prev.length === 1 && prev[0] === di.id) {
+              selectedNodesRef.current = []; setSelectedNodes([]);
+            } else {
+              selectedNodesRef.current = [di.id]; setSelectedNodes([di.id]);
+            }
+          }
         }
       }
       dragInfoRef.current = null;
       setDragging(null);
-      if (movedRef.current) lastTapRef.current = Date.now();
+      // Mark the time so the SVG's onClick (onCanvasTap) debounce skips placing a
+      // new object — a click that lands on an existing node must only select it,
+      // never drop a new object on top.
+      lastTapRef.current = Date.now();
+      nodeJustTappedRef.current = true;
       return;
     }
     if (pi) {
       try { svg?.releasePointerCapture?.(e.pointerId); } catch (err) {}
       panInfoRef.current = null;
+      // A right-click without a drag opens the context menu at the cursor.
+      if (pi.rightClick && !movedRef.current) {
+        setCtxMenu({ x: e.clientX, y: e.clientY });
+      }
       if (movedRef.current) lastTapRef.current = Date.now();
       return;
     }
@@ -2627,17 +2756,21 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const deleteCable = (cid) => { setLCables(lCables.filter(c => c.id !== cid)); setEditCable(null); };
   const updateCable = (cid, data) => { setLCables(lCables.map(c => c.id === cid ? { ...c, ...data } : c)); };
 
-  const save = () => {
-    setNodes(lNodes); setSegments(lSegs); setCables(lCables);
-    setBgImage(lBg ? { ...lBg, locked: bgLocked } : null);
-    close();
-  };
-
   // ---- Drawing tabs: switch between open drawings without losing edits ----
   const draftSnapshot = () => ({
     nodes: lNodes, segments: lSegs, cables: lCables,
-    bgImage: lBg ? { ...lBg, locked: bgLocked } : null,
+    bgImage: lBg ? { ...lBg } : null,
   });
+
+  const save = async () => {
+    // Commit the current draft into live app state…
+    setNodes(lNodes); setSegments(lSegs); setCables(lCables);
+    setBgImage(lBg ? { ...lBg } : null);
+    // …and persist every drawing (active draft + index) to storage.
+    if (saveAllDrawings) { try { await saveAllDrawings(draftSnapshot()); } catch (e) {} }
+    close();
+  };
+
   const switchToTab = (id) => {
     if (id === activeProjectId) return;
     commitDraftAndSwitch?.(draftSnapshot(), id);
@@ -2647,6 +2780,17 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   const newTab = () => {
     commitDraftAndCreate?.(draftSnapshot());
   };
+
+  // Auto-save: when enabled, push local edits to app state on every change
+  // (debounced). The app-level effect then persists them to storage.
+  useEffect(() => {
+    if (!autoSave) return;
+    const t = setTimeout(() => {
+      setNodes(lNodes); setSegments(lSegs); setCables(lCables);
+      setBgImage(lBg ? { ...lBg } : null);
+    }, 600);
+    return () => clearTimeout(t);
+  }, [lNodes, lSegs, lCables, lBg, autoSave]);
 
   // ---- Background image (PDF / image) handling ----
   const loadPdfJs = () => new Promise((resolve, reject) => {
@@ -2672,6 +2816,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       let dataUrl;
       const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
       const isImg = (file.type && file.type.startsWith('image/')) || /\.(png|jpe?g|gif|webp|bmp)$/i.test(file.name);
+      let pdfFit = null;   // world-pixels per PDF-point — lets a 1:R ratio set a true scale
       if (isPdf) {
         setBgStatus('Indlæser PDF-bibliotek …');
         const pdfjsLib = await loadPdfJs();
@@ -2679,20 +2824,43 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         const buf = await file.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
         const page = await pdf.getPage(1);
-        const viewport = page.getViewport({ scale: 2 });
+        // Cap the longest side so the resulting JPEG fits in localStorage (~5 MB).
+        // Aim for at most ~2600 px on the long edge; that keeps plans crisp but small.
+        const base = page.getViewport({ scale: 1 });
+        const MAX_SIDE = 2600;
+        const fit = Math.min(2, MAX_SIDE / Math.max(base.width, base.height));
+        pdfFit = fit;
+        const viewport = page.getViewport({ scale: fit > 0 ? fit : 1 });
         const canvas = document.createElement('canvas');
         canvas.width = viewport.width;
         canvas.height = viewport.height;
         const ctx = canvas.getContext('2d');
         await page.render({ canvasContext: ctx, viewport }).promise;
-        dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        dataUrl = canvas.toDataURL('image/jpeg', 0.8);
       } else if (isImg) {
         setBgStatus('Læser billede …');
-        dataUrl = await new Promise((res, rej) => {
+        const raw = await new Promise((res, rej) => {
           const r = new FileReader();
           r.onload = () => res(r.result);
           r.onerror = () => rej(new Error('FileReader fejl'));
           r.readAsDataURL(file);
+        });
+        // Downscale large images so the stored data URL fits in localStorage
+        dataUrl = await new Promise((res) => {
+          const im = new Image();
+          im.onload = () => {
+            const MAX_SIDE = 2600;
+            const longest = Math.max(im.naturalWidth, im.naturalHeight);
+            if (longest <= MAX_SIDE) { res(raw); return; }
+            const k = MAX_SIDE / longest;
+            const cv = document.createElement('canvas');
+            cv.width = Math.round(im.naturalWidth * k);
+            cv.height = Math.round(im.naturalHeight * k);
+            cv.getContext('2d').drawImage(im, 0, 0, cv.width, cv.height);
+            res(cv.toDataURL('image/jpeg', 0.8));
+          };
+          im.onerror = () => res(raw);
+          im.src = raw;
         });
       } else {
         setBgStatus(`Filtype ikke understøttet: "${file.type || file.name}". Vælg PDF, PNG eller JPG.`);
@@ -2710,6 +2878,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
           scale: 1,
           opacity: 0.5,
           name: file.name,
+          pdfFit: pdfFit || undefined,
         });
         setBgBusy(false);
         setBgPanel(true);
@@ -2786,7 +2955,38 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
   useEffect(() => {
     if (vbox === null) setVbox({ ...contentBounds });
   }, [contentBounds, vbox]);
-  const bounds = vbox || contentBounds;
+  const rawBounds = vbox || contentBounds;
+  // Expand the viewBox to match the container's aspect ratio so the SVG renders
+  // with no letterbox offset. This keeps screen↔world coordinate mapping exact
+  // and identical for placing, marquee selection and measuring.
+  const [svgAspect, setSvgAspect] = useState(null);
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) setSvgAspect(r.width / r.height);
+    };
+    measure();
+    const ro = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(measure) : null;
+    if (ro) ro.observe(el);
+    window.addEventListener('resize', measure);
+    return () => { if (ro) ro.disconnect(); window.removeEventListener('resize', measure); };
+  }, []);
+  const bounds = (() => {
+    if (!svgAspect) return rawBounds;
+    const vbAspect = rawBounds.w / rawBounds.h;
+    if (Math.abs(vbAspect - svgAspect) < 0.001) return rawBounds;
+    if (vbAspect < svgAspect) {
+      // container is wider → widen the viewBox, keep centre
+      const newW = rawBounds.h * svgAspect;
+      return { x: rawBounds.x - (newW - rawBounds.w) / 2, y: rawBounds.y, w: newW, h: rawBounds.h };
+    } else {
+      // container is taller → heighten the viewBox, keep centre
+      const newH = rawBounds.w / svgAspect;
+      return { x: rawBounds.x, y: rawBounds.y - (newH - rawBounds.h) / 2, w: rawBounds.w, h: newH };
+    }
+  })();
 
   const fitView = () => setVbox({ ...contentBounds });
   const zoomBy = (factor) => {
@@ -2818,18 +3018,28 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
     setBgStatus(`Målestok kalibreret: ${meters} m sat. Grid = virkelige meter.`);
   };
 
-  // Set scale by typed drawing ratio (e.g. 1:100). We need the print resolution to
-  // convert; we assume the rendered bg is at a known px-per-metre. Simpler model:
-  // at 1:R, one metre on paper = R metres real. We map so that the displayed bg matches
-  // grid using the image's pixel dimensions and an assumed source DPI of the original.
-  // Practical approach: ratio scales the bg so its pixels map to grid via a metre factor.
+  // Apply a drawing ratio 1:R. For PDFs we know the render scale (pdfFit), so we
+  // can rescale the background so that PX_PER_M world-units = 1 real metre at that
+  // ratio — then measurements and tray lengths reflect the ratio automatically.
   const applyRatio = (ratioR) => {
     if (!lBg || !ratioR || ratioR <= 0) return;
-    // The PDF was rendered at scale 2. A4/A1 etc. unknown, so we use a sensible assumption:
-    // many CAD PDFs are exported so that 1 drawing unit ≈ defined by ratio. We store the
-    // ratio for display and let the user fine-tune with the scale slider / wheel.
-    setLBg({ ...lBg, scaleRatio: ratioR });
-    setBgStatus(`Målestoksforhold 1:${ratioR} gemt (vises som reference).`);
+    if (!lBg.pdfFit) {
+      setBgStatus('Målestoksforhold kræver en PDF (kendt papirstørrelse). Brug to-punkts-kalibrering for billeder.');
+      setLBg({ ...lBg, scaleRatio: ratioR });
+      return;
+    }
+    // world-units the bg should span per real metre = PX_PER_M.
+    // paper-metre per world-pixel (at scale 1) = 0.0254 / (72 * pdfFit).
+    // At 1:R, real metre per base-world-pixel = 0.0254 * R / (72 * pdfFit).
+    // We want that to equal 1/PX_PER_M, so the needed absolute bg scale is:
+    const targetScale = (0.0254 * ratioR * PX_PER_M) / (72 * lBg.pdfFit);
+    const factor = targetScale / (lBg.scale || 1);
+    // anchor the rescale on the current viewport centre so it stays in view
+    const cx = bounds.x + bounds.w / 2, cy = bounds.y + bounds.h / 2;
+    const nx = cx - (cx - lBg.x) * factor;
+    const ny = cy - (cy - lBg.y) * factor;
+    setLBg({ ...lBg, scale: targetScale, x: nx, y: ny, scaleRatio: ratioR });
+    setBgStatus(`Målestoksforhold 1:${ratioR} anvendt — målinger og længder er nu i virkelige meter.`);
   };
 
   // Mouse-wheel zoom toward the cursor position (whole drawing scales together)
@@ -2976,10 +3186,25 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
           <button onClick={()=>setHideChrome(h=>!h)} className="px-2 py-1.5 rounded text-xs bg-blue-800/60 active:bg-blue-800 flex items-center gap-1" title="Skjul/vis paneler for mere plads">
             {hideChrome ? <ChevronRight size={14}/> : <X size={14}/>} {hideChrome ? 'Vis' : 'Skjul'}
           </button>
+          <button onClick={()=>setShowTools(v=>!v)}
+                  className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${showTools ? 'bg-blue-800/60 active:bg-blue-800' : 'bg-blue-800/20 text-blue-300'}`}
+                  title="Vis/skjul værktøjer (grid, zoom, fit, kategorier, legender, ret op …)">
+            <Grid3x3 size={14}/> Værktøjer
+          </button>
+          <button onClick={()=>{ setHideChrome(false); toggleAddPanel(); }}
+                  className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${addPanel ? 'bg-amber-400 text-amber-950' : 'bg-blue-800/60 active:bg-blue-800'}`}
+                  title="Tilføj nyt objekt (føringsveje, tavler, laster, kabler)">
+            <Plus size={14}/> Tilføj nyt objekt
+          </button>
           <button onClick={()=>{ setHideChrome(false); setBgPanel(p=>!p); }}
                   className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${bgPanel ? 'bg-emerald-500 text-white' : 'bg-blue-800/60 active:bg-blue-800'}`}
                   title="Juster tegningsgrundlag (plantegning som baggrund)">
             <FileText size={14}/> Juster tegningsgrundlag
+          </button>
+          <button onClick={toggleAutoSave}
+                  className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${autoSave ? 'bg-emerald-500 text-white' : 'bg-blue-800/60 active:bg-blue-800'}`}
+                  title={autoSave ? 'Auto-gem er slået til — alt gemmes automatisk' : 'Auto-gem er slået fra — husk at trykke Gem'}>
+            <RefreshCw size={13} className={autoSave ? 'animate-pulse' : ''}/> Auto-gem: {autoSave ? 'TIL' : 'FRA'}
           </button>
           <button onClick={save} className="bg-white text-blue-900 px-3 py-1.5 rounded-lg font-semibold text-sm flex items-center gap-1"><Save size={14}/> Gem</button>
         </div>
@@ -3001,17 +3226,32 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         </div>
       )}
 
-      {/* Toolbar */}
+      {/* Add-object category bar — only visible when "Tilføj nyt objekt" is active */}
+      {addPanel && !hideChrome && (
+        <div className="bg-stone-100 px-3 py-2 flex gap-2 items-center overflow-x-auto border-b">
+          <span className="text-xs font-semibold text-stone-600 shrink-0">Tilføj:</span>
+          <button onClick={()=>selectAddCategory('trays')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border-2 ${addCategory==='trays' ? 'border-blue-600 bg-white text-blue-900' : 'border-transparent bg-white/70 text-stone-700'}`}>
+            <GitBranch size={14}/> Føringsveje
+          </button>
+          <button onClick={()=>selectAddCategory('boards')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border-2 ${addCategory==='boards' ? 'border-blue-600 bg-white text-blue-900' : 'border-transparent bg-white/70 text-stone-700'}`}>
+            <Database size={14}/> Tavler
+          </button>
+          <button onClick={()=>selectAddCategory('loads')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border-2 ${addCategory==='loads' ? 'border-blue-600 bg-white text-blue-900' : 'border-transparent bg-white/70 text-stone-700'}`}>
+            <Zap size={14}/> Laster
+          </button>
+          <button onClick={()=>selectAddCategory('cables')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 border-2 ${addCategory==='cables' ? 'border-blue-600 bg-white text-blue-900' : 'border-transparent bg-white/70 text-stone-700'}`}>
+            <Cable size={14}/> Kabler
+          </button>
+        </div>
+      )}
+
+      {/* Navigation & view tools — always available, can be hidden separately */}
+      {showTools && !hideChrome && (
       <div className="bg-stone-100 p-2 flex gap-1 overflow-x-auto border-b">
-        <ToolBtn active={mode==='junction'} onClick={()=>switchMode('junction')} icon={Plus} label="Knude"/>
-        <ToolBtn active={mode==='board'} onClick={()=>switchMode('board')} icon={Database} label="Tavle"/>
-        <ToolBtn active={mode==='load'} onClick={()=>switchMode('load')} icon={Zap} label="Last"/>
-        <ToolBtn active={mode==='connect'} onClick={()=>switchMode('connect')} icon={Link2} label="Forbind"/>
-        <ToolBtn active={mode==='cable'} onClick={()=>switchMode('cable')} icon={Cable} label="Kabel"/>
-        <ToolBtn active={mode==='edit'} onClick={()=>switchMode('edit')} icon={Edit2} label="Rediger"/>
-        <ToolBtn active={mode==='select'} onClick={()=>switchMode('select')} icon={MousePointer2} label="Markér"/>
-        <ToolBtn active={mode==='pan'} onClick={()=>switchMode('pan')} icon={Move} label="Flyt"/>
-        <div className="border-l mx-1"></div>
         <button onClick={()=>setShowGrid(g=>!g)} className={`px-2 py-1.5 rounded text-xs flex items-center gap-1 ${showGrid?'bg-blue-100 text-blue-900':'text-stone-600'}`}><Grid3x3 size={14}/> Grid</button>
         <button onClick={()=>zoomBy(1/1.25)} className="px-2 py-1.5 rounded text-xs bg-stone-200"><ZoomOut size={14}/></button>
         <button onClick={()=>zoomBy(1.25)} className="px-2 py-1.5 rounded text-xs bg-stone-200"><ZoomIn size={14}/></button>
@@ -3023,40 +3263,36 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
           <button onClick={renumber} className="px-2 py-1.5 rounded text-xs bg-purple-100 text-purple-900 flex items-center gap-1" title="Renumber all segments"><RefreshCw size={12}/> WC###</button>
         </div>
       </div>
+      )}
 
-      {/* Junction shape picker — appears when Knude mode is active */}
-      {mode === 'junction' && !hideChrome && (
+      {/* Føringsvej options — shapes + segment — shown when "Føringsveje" is picked */}
+      {addPanel && addCategory === 'trays' && (mode === 'junction' || mode === 'connect') && !hideChrome && (
         <div className="bg-blue-100/70 border-b border-blue-200 px-3 py-2 flex items-center gap-2 flex-wrap">
-          <span className="text-xs font-semibold text-blue-900 shrink-0">Vælg form:</span>
+          <span className="text-xs font-semibold text-blue-900 shrink-0">Tilføj:</span>
           {[
             ['dot', 'Punkt', <svg key="d" width="22" height="22" viewBox="0 0 22 22"><circle cx="11" cy="11" r="6" fill="#fff" stroke="#1565C0" strokeWidth="2"/></svg>],
             ['tee', 'T-stykke', <svg key="t" width="22" height="22" viewBox="0 0 22 22"><line x1="3" y1="8" x2="19" y2="8" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round"/><line x1="11" y1="8" x2="11" y2="19" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round"/><circle cx="3" cy="8" r="2" fill="#1565C0"/><circle cx="19" cy="8" r="2" fill="#1565C0"/><circle cx="11" cy="19" r="2" fill="#1565C0"/></svg>],
             ['corner', 'Hjørne', <svg key="c" width="22" height="22" viewBox="0 0 22 22"><polyline points="5,4 5,15 16,15" fill="none" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/><circle cx="5" cy="4" r="2" fill="#1565C0"/><circle cx="16" cy="15" r="2" fill="#1565C0"/></svg>],
             ['cross', 'Kryds', <svg key="x" width="22" height="22" viewBox="0 0 22 22"><line x1="3" y1="11" x2="19" y2="11" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round"/><line x1="11" y1="3" x2="11" y2="19" stroke="#1565C0" strokeWidth="2.5" strokeLinecap="round"/><circle cx="3" cy="11" r="2" fill="#1565C0"/><circle cx="19" cy="11" r="2" fill="#1565C0"/><circle cx="11" cy="3" r="2" fill="#1565C0"/><circle cx="11" cy="19" r="2" fill="#1565C0"/></svg>],
           ].map(([k, label, icon]) => (
-            <button key={k} onClick={()=>setJunctionShape(k)}
-                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border-2 ${junctionShape===k ? 'border-blue-600 bg-white' : 'border-transparent bg-white/60'}`}>
+            <button key={k} onClick={()=>{ setJunctionShape(k); if (mode !== 'junction') setMode('junction'); }}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border-2 ${mode==='junction' && junctionShape===k ? 'border-blue-600 bg-white' : 'border-transparent bg-white/60'}`}>
               {icon} {label}
             </button>
           ))}
-          <label className="text-xs text-blue-900 flex items-center gap-1 ml-auto shrink-0" title="Størrelse på alle cirkler i hele tegningen">
-            Cirkelstørrelse
-            <input type="range" min="3" max="20" value={circleSize} onChange={e=>updateCircleSize(Number(e.target.value))} className="w-20"/>
-            <span className="w-7">{circleSize}</span>
-          </label>
+          <div className="border-l border-blue-300 h-6 mx-1"></div>
+          <button onClick={()=>{ setMode('connect'); setConnectFrom(null); }}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border-2 ${mode==='connect' ? 'border-blue-600 bg-white' : 'border-transparent bg-white/60'}`}>
+            <Link2 size={15}/> Tilføj føringsvejssegment
+          </button>
+          {mode === 'junction' && (
+            <label className="text-xs text-blue-900 flex items-center gap-1 ml-auto shrink-0" title="Størrelse på alle cirkler i hele tegningen">
+              Cirkelstørrelse
+              <input type="range" min="3" max="20" value={circleSize} onChange={e=>updateCircleSize(Number(e.target.value))} className="w-20"/>
+              <span className="w-7">{circleSize}</span>
+            </label>
+          )}
         </div>
-      )}
-
-      {/* Dedicated background (tegningsgrundlag) bar — compact when active */}
-      {!hideChrome && lBg && (
-      <div className="bg-emerald-50 border-b border-emerald-100 px-3 py-1.5">
-        <div className="flex items-center gap-2">
-          <FileText size={14} className="text-emerald-700 shrink-0"/>
-          <span className="text-xs text-emerald-900 truncate flex-1">{lBg.name || 'Tegningsgrundlag aktivt'}</span>
-          <button onClick={()=>{ setHideChrome(false); setBgPanel(p=>!p); }} className="text-xs px-3 py-1 bg-emerald-600 text-white rounded-lg font-semibold shrink-0">{bgPanel ? 'Skjul' : 'Juster'}</button>
-          <button onClick={removeBg} className="text-xs px-2 py-1 bg-white text-red-600 border border-red-200 rounded-lg shrink-0 flex items-center gap-1"><Trash2 size={12}/></button>
-        </div>
-      </div>
       )}
 
       {/* Background adjust panel — opens from the "Juster tegningsgrundlag" header button */}
@@ -3099,54 +3335,36 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
             </div>
           </div>
 
-          {/* Lock toggle */}
-          <button onClick={()=>setBgLocked(l=>!l)}
-                  className={`w-full text-xs py-2 rounded-lg font-semibold flex items-center justify-center gap-1.5 ${bgLocked ? 'bg-blue-900 text-white' : 'bg-stone-100 text-stone-700 border border-stone-300'}`}>
-            {bgLocked ? '🔒 Tegning låst — knuder følger tegningen' : '🔓 Lås tegning (så knuder ikke forskydes)'}
-          </button>
-
-          {/* Calibration */}
+          {/* Calibration / scale */}
           <div className="border border-blue-100 rounded-lg p-2 bg-blue-50/40 space-y-1.5">
             <div className="text-xs font-semibold text-blue-900">Målestok</div>
-            <button onClick={()=>{ setCalibrating(true); setCalibPoints([]); setBgPanel(false); setBgStatus('Tap to punkter på tegningen med kendt afstand …'); }}
-                    disabled={bgLocked}
-                    className={`w-full text-xs py-2 rounded-lg font-semibold flex items-center justify-center gap-1 ${bgLocked ? 'bg-stone-100 text-stone-400' : 'bg-blue-600 text-white'}`}>
+            <button onClick={()=>{ setCalibrating(true); setCalibPoints([]); setMeasuring(false); setMeasureResult(null); setBgPanel(false); setBgStatus('Klik to punkter på tegningen med kendt afstand …'); }}
+                    className="w-full text-xs py-2 rounded-lg font-semibold flex items-center justify-center gap-1 bg-blue-600 text-white">
               <MousePointer2 size={13}/> Kalibrér: klik to punkter med kendt afstand
             </button>
             <div className="flex items-center gap-2">
               <span className="text-xs text-stone-600 shrink-0">eller 1:</span>
               <input type="number" placeholder="100" defaultValue={lBg.scaleRatio || ''}
-                     onBlur={e=> e.target.value && applyRatio(Number(e.target.value))}
-                     disabled={bgLocked}
-                     className="flex-1 border border-stone-300 rounded px-2 py-1 text-sm disabled:bg-stone-100"/>
-              <span className="text-xs text-stone-500 shrink-0">{lBg.scaleRatio ? `(1:${lBg.scaleRatio})` : ''}</span>
+                     id="ratioInput"
+                     className="flex-1 border border-stone-300 rounded px-2 py-1 text-sm"/>
+              <button onClick={()=>{ const v = Number(document.getElementById('ratioInput')?.value); if (v > 0) applyRatio(v); }}
+                      className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-lg font-semibold shrink-0">Anvend</button>
             </div>
+            {lBg.scaleRatio ? <div className="text-[11px] text-blue-800">Aktivt forhold: 1:{lBg.scaleRatio}</div> : null}
           </div>
 
-          <label className={`block text-xs ${bgLocked ? 'text-stone-300' : 'text-stone-600'}`}>Skalering: {Math.round((lBg.scale||1)*100)}%
-            <input type="range" min="10" max="400" value={(lBg.scale||1)*100}
-                   onChange={e=>updateBg({ scale: Number(e.target.value)/100 })}
-                   disabled={bgLocked}
-                   className="w-full"/>
-          </label>
-          <label className="block text-xs text-stone-600">Gennemsigtighed: {Math.round((lBg.opacity ?? 0.5)*100)}%
+          {/* Measurement tool — press and drag to measure */}
+          <button onClick={()=>{ setMeasuring(true); setMeasureResult(null); setCalibrating(false); setBgPanel(false); setBgStatus('Måling: træk fra punkt A til punkt B …'); }}
+                  className="w-full text-xs py-2 rounded-lg font-semibold flex items-center justify-center gap-1 bg-emerald-600 text-white">
+            <MousePointer2 size={13}/> Mål afstand i tegningen
+          </button>
+
+          <label className="block text-xs text-stone-600">Opacitet: {Math.round((lBg.opacity ?? 0.5)*100)}%
             <input type="range" min="10" max="100" value={(lBg.opacity ?? 0.5)*100}
                    onChange={e=>updateBg({ opacity: Number(e.target.value)/100 })}
                    className="w-full"/>
           </label>
-          <div className="grid grid-cols-2 gap-2">
-            <label className={`text-xs ${bgLocked ? 'text-stone-300' : 'text-stone-600'}`}>X-position
-              <input type="number" value={Math.round(lBg.x)} onChange={e=>updateBg({ x: Number(e.target.value) })}
-                     disabled={bgLocked}
-                     className="w-full border border-stone-300 rounded px-2 py-1 text-sm disabled:bg-stone-100"/>
-            </label>
-            <label className={`text-xs ${bgLocked ? 'text-stone-300' : 'text-stone-600'}`}>Y-position
-              <input type="number" value={Math.round(lBg.y)} onChange={e=>updateBg({ y: Number(e.target.value) })}
-                     disabled={bgLocked}
-                     className="w-full border border-stone-300 rounded px-2 py-1 text-sm disabled:bg-stone-100"/>
-            </label>
-          </div>
-          <p className="text-[11px] text-stone-400">Tip: Brug musens scrollhjul til at zoome hele tegningen. Kalibrér målestok ved at klikke to punkter med kendt afstand — så bliver længderne på dine føringsveje korrekte.</p>
+          <p className="text-[11px] text-stone-400">Tip: Brug musens scrollhjul til at zoome hele tegningen. Placerede objekter bliver på deres plads. Kalibrér målestok ved at klikke to punkter med kendt afstand — så bliver målinger og føringsvejs-længder korrekte.</p>
         </div>
       )}
 
@@ -3209,6 +3427,13 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         </div>
       )}
 
+      {/* Neutral edit-mode hint */}
+      {!hideChrome && mode === 'edit' && selectedNodes.length === 0 && (
+        <div className="bg-stone-50 text-stone-500 text-[11px] text-center py-1 px-2">
+          Rediger-tilstand: klik på objekter for at markere flere · træk for at flytte · dobbeltklik for at redigere · træk på tom flade for at markere et område
+        </div>
+      )}
+
       {/* Help bar — only shows active connect/cable status (warnings, current step) */}
       {!hideChrome && (mode === 'connect' || mode === 'cable') && (
       <div className="bg-blue-50 text-blue-900 text-xs text-center py-1.5 px-2">
@@ -3222,7 +3447,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
       )}
 
       {/* Multi-select action bar (edit mode) */}
-      {(mode === 'edit' || mode === 'select') && selectedNodes.length > 0 && (
+      {selectedNodes.length > 0 && (mode !== 'connect' && mode !== 'cable') && (
         <div className="bg-blue-900 text-white px-3 py-2 flex items-center gap-2 text-sm">
           <span className="font-semibold">{selectedNodes.length} valgt</span>
           <span className="text-blue-200 text-xs">
@@ -3239,7 +3464,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
         <svg ref={svgRef}
              viewBox={`${bounds.x} ${bounds.y} ${bounds.w} ${bounds.h}`}
              className="w-full h-full"
-             style={{ cursor: mode==='pan' ? 'grab' : 'crosshair', touchAction:'none' }}
+             style={{ cursor: 'crosshair', touchAction:'none', userSelect:'none', WebkitUserSelect:'none', MozUserSelect:'none' }}
              onClick={onCanvasTap}
              onContextMenu={(e)=>e.preventDefault()}
              onPointerDown={onCanvasPointerDown}
@@ -3396,6 +3621,23 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
                   stroke="#2563eb" strokeWidth="2" strokeDasharray="4,3" style={{ pointerEvents:'none' }}/>
           )}
 
+          {/* Measurement line + result label (press-drag) */}
+          {measureResult && measureResult.points.length === 2 && (() => {
+            const [a, b] = measureResult.points;
+            const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+            return (
+              <g style={{ pointerEvents:'none', userSelect:'none', WebkitUserSelect:'none' }}>
+                <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="#059669" strokeWidth="2.5"/>
+                <circle cx={a.x} cy={a.y} r="5" fill="#059669" stroke="#fff" strokeWidth="2"/>
+                <circle cx={b.x} cy={b.y} r="5" fill="#059669" stroke="#fff" strokeWidth="2"/>
+                <text x={mx} y={my - 8} textAnchor="middle" fontSize="13" fontWeight="bold" fill="#047857"
+                      style={{ paintOrder:'stroke', userSelect:'none', WebkitUserSelect:'none' }} stroke="#fff" strokeWidth="4" strokeLinejoin="round">
+                  {measureResult.m.toFixed(2)} m
+                </text>
+              </g>
+            );
+          })()}
+
           {/* Preview line during connect */}
           {connectFrom && lNodes[connectFrom] && (
             <line x1={lNodes[connectFrom].x} y1={lNodes[connectFrom].y}
@@ -3437,7 +3679,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
               onClick:(e)=>onNodeTap(e, id),
               onDoubleClick:(e)=>onNodeDouble(e, id),
               onPointerDown:(e)=>startDrag(e, id),
-              style:{ cursor: mode==='edit' ? 'move' : 'pointer', touchAction:'none', opacity: nodeOpacity },
+              style:{ cursor: (mode==='connect'||mode==='cable') ? 'pointer' : 'move', touchAction:'none', opacity: nodeOpacity },
             };
             if (kind === 'board') {
               const bw = (p.size || 14) * 1.85, bh = (p.size || 14) * 1.07;
@@ -3473,7 +3715,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
             );
             if (jShape === 'tee') {
               const arm = jSize;
-              const showRot = mode === 'edit' && isJSel;
+              const showRot = isJSel;
               return (
                 <g key={id}>
                   <g {...common} transform={`rotate(${rot} ${p.x} ${p.y})`}>
@@ -3497,7 +3739,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
             }
             if (jShape === 'corner') {
               const arm = jSize;
-              const showRot = mode === 'edit' && isJSel;
+              const showRot = isJSel;
               return (
                 <g key={id}>
                   <g {...common} transform={`rotate(${rot} ${p.x} ${p.y})`}>
@@ -3520,7 +3762,7 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
             }
             if (jShape === 'cross') {
               const arm = jSize;
-              const showRot = mode === 'edit' && isJSel;
+              const showRot = isJSel;
               return (
                 <g key={id}>
                   <g {...common} transform={`rotate(${rot} ${p.x} ${p.y})`}>
@@ -3695,6 +3937,85 @@ function DrawingModal({ close, segments, setSegments, nodes, setNodes, trayTypes
           {calibPoints.length === 0 ? 'Tap punkt 1 på tegningen' : 'Tap punkt 2 (kendt afstand fra punkt 1)'}
           <button onClick={()=>{ setCalibrating(false); setCalibPoints([]); setBgStatus(null); }} className="ml-2 underline">Annuller</button>
         </div>
+      )}
+
+      {/* Measurement status / result bar */}
+      {measuring && (
+        <div className="absolute top-0 left-0 right-0 bg-emerald-600 text-white text-xs text-center py-2 px-3 z-20 flex items-center justify-center gap-2">
+          <MousePointer2 size={14}/>
+          {measureResult && measureResult.m > 0
+            ? <span className="font-semibold">Målt afstand: {measureResult.m.toFixed(2)} m — træk igen for ny måling</span>
+            : 'Træk fra punkt A til punkt B for at måle'}
+          <button onClick={()=>{ setMeasuring(false); setMeasureResult(null); measureDragRef.current = null; setBgStatus(null); }} className="ml-2 underline">Luk</button>
+        </div>
+      )}
+
+      {/* Right-click context menu — mirrors the blue bar + view tools, with
+          submenus that open on hover */}
+      {ctxMenu && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={()=>{ setCtxMenu(null); setCtxSub(null); }} onContextMenu={(e)=>{ e.preventDefault(); setCtxMenu(null); setCtxSub(null); }}/>
+          <div className="fixed z-40 bg-white rounded-lg shadow-xl border border-stone-200 py-1 text-sm w-60"
+               style={{ left: Math.min(ctxMenu.x, (typeof window!=='undefined'?window.innerWidth:1000) - 250), top: Math.min(ctxMenu.y, (typeof window!=='undefined'?window.innerHeight:800) - 360) }}
+               onClick={e=>e.stopPropagation()}>
+
+            {/* Tilføj nyt objekt → submenu of categories */}
+            <div className="relative" onMouseEnter={()=>setCtxSub('add')}>
+              <button className={`w-full text-left px-3 py-2 flex items-center justify-between gap-2 hover:bg-stone-100 ${ctxSub==='add'?'bg-stone-100':''}`}>
+                <span className="flex items-center gap-2"><Plus size={14}/> Tilføj nyt objekt</span>
+                <ChevronRight size={14} className="text-stone-400"/>
+              </button>
+              {ctxSub==='add' && (
+                <div className="absolute left-full top-0 -ml-1 bg-white rounded-lg shadow-xl border border-stone-200 py-1 w-52">
+                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('trays'); setHideChrome(false); setCtxMenu(null); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><GitBranch size={14}/> Føringsveje</button>
+                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('boards'); setHideChrome(false); setCtxMenu(null); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><Database size={14}/> Tavler</button>
+                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('loads'); setHideChrome(false); setCtxMenu(null); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><Zap size={14}/> Laster</button>
+                  <button onClick={()=>{ setAddPanel(true); selectAddCategory('cables'); setHideChrome(false); setCtxMenu(null); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><Cable size={14}/> Kabler</button>
+                </div>
+              )}
+            </div>
+
+            {/* Visning → submenu of view toggles */}
+            <div className="relative" onMouseEnter={()=>setCtxSub('view')}>
+              <button className={`w-full text-left px-3 py-2 flex items-center justify-between gap-2 hover:bg-stone-100 ${ctxSub==='view'?'bg-stone-100':''}`}>
+                <span className="flex items-center gap-2"><Grid3x3 size={14}/> Visning</span>
+                <ChevronRight size={14} className="text-stone-400"/>
+              </button>
+              {ctxSub==='view' && (
+                <div className="absolute left-full top-0 -ml-1 bg-white rounded-lg shadow-xl border border-stone-200 py-1 w-52">
+                  <button onClick={()=>{ setShowGrid(g=>!g); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><Grid3x3 size={14}/> Grid {showGrid?'(til)':'(fra)'}</button>
+                  <button onClick={()=>{ zoomBy(1.25); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><ZoomIn size={14}/> Zoom ind</button>
+                  <button onClick={()=>{ zoomBy(1/1.25); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><ZoomOut size={14}/> Zoom ud</button>
+                  <button onClick={()=>{ fitView(); setCtxMenu(null); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><MousePointer2 size={14}/> Tilpas (Fit)</button>
+                  <button onClick={()=>{ setShowLegends(v=>!v); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><FileText size={14}/> Legender {showLegends?'(til)':'(fra)'}</button>
+                  <button onClick={()=>{ setCatPanel(p=>!p); setCtxMenu(null); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><Layers size={14}/> Kategorier</button>
+                  <button onClick={()=>{ setShowTools(v=>!v); }} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><Grid3x3 size={14}/> Værktøjslinje {showTools?'skjul':'vis'}</button>
+                </div>
+              )}
+            </div>
+
+            {/* Tegningsgrundlag */}
+            <button onClick={()=>{ setHideChrome(false); setBgPanel(true); setCtxMenu(null); }} onMouseEnter={()=>setCtxSub(null)}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><FileText size={14}/> Juster tegningsgrundlag</button>
+
+            <div className="border-t border-stone-100 my-1"></div>
+
+            {/* Direct actions */}
+            <button onClick={()=>{ straightenAll(); setCtxMenu(null); }} onMouseEnter={()=>setCtxSub(null)}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><GitBranch size={14}/> Ret alt op</button>
+            <button onClick={()=>{ renumber(); setCtxMenu(null); }} onMouseEnter={()=>setCtxSub(null)}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><RefreshCw size={14}/> Nummerér føringsveje (WC###)</button>
+            <button onClick={()=>{ undo(); setCtxMenu(null); }} disabled={!canUndo} onMouseEnter={()=>setCtxSub(null)}
+                    className={`w-full text-left px-3 py-2 flex items-center gap-2 ${canUndo?'hover:bg-stone-100':'text-stone-300'}`}><RefreshCw size={14} style={{ transform:'scaleX(-1)' }}/> Fortryd</button>
+
+            <div className="border-t border-stone-100 my-1"></div>
+
+            <button onClick={()=>{ toggleAutoSave(); }} onMouseEnter={()=>setCtxSub(null)}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100"><RefreshCw size={14}/> Auto-gem: {autoSave?'TIL':'FRA'}</button>
+            <button onClick={()=>{ save(); }} onMouseEnter={()=>setCtxSub(null)}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-stone-100 text-blue-900 font-semibold"><Save size={14}/> Gem alt</button>
+          </div>
+        </>
       )}
 
       {/* Calibration distance dialog */}
@@ -4229,7 +4550,6 @@ function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addW
   const [color, setColor] = useState(s.color || '');
   const [lineStyle, setLineStyle] = useState(s.lineStyle || 'solid');
   const [elevation_mm, setElev] = useState(s.elevation_mm ?? '');
-  const nWps = (s.waypoints || []).length;
   return (
     <div className="absolute inset-0 bg-black/50 z-10 flex items-end lg:items-center justify-center p-4" onClick={()=>setId(null)}>
       <div className="bg-white p-4 rounded-2xl w-full lg:max-w-md max-h-[85vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
@@ -4277,27 +4597,6 @@ function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addW
             <input type="color" value={color || '#1f6feb'} onChange={e=>setColor(e.target.value)}
                    className="w-7 h-7 rounded cursor-pointer border border-stone-300" title="Vælg egen farve"/>
           </div>
-        </div>
-
-        {/* Bend (knæk) controls */}
-        <div className="border border-amber-100 rounded-lg p-2 mt-2 bg-amber-50/40">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-xs font-semibold text-amber-900">Knæk på føringsvejen</span>
-            <span className="text-xs text-stone-500">{nWps} knæk</span>
-          </div>
-          <div className="flex gap-2">
-            <button onClick={()=>{ addWaypoint(id); setId(null); }}
-                    className="flex-1 text-xs py-2 bg-amber-500 text-white rounded-lg font-semibold flex items-center justify-center gap-1">
-              <Plus size={13}/> Tilføj knæk
-            </button>
-            {nWps > 0 && (
-              <button onClick={()=>removeWaypoint(id)}
-                      className="flex-1 text-xs py-2 bg-white border border-amber-300 text-amber-700 rounded-lg font-semibold">
-                Fjern sidste knæk
-              </button>
-            )}
-          </div>
-          <p className="text-[11px] text-stone-400 mt-1">Efter tilføjelse: træk det hvide punkt på føringsvejen for at placere knækket.</p>
         </div>
 
         {/* Straighten this segment */}
