@@ -8,13 +8,14 @@ import * as XLSX from 'xlsx';
 // =========================
 const appStorage = {
   async get(key) {
-    try { return localStorage.getItem(key); } catch (e) { return null; }
+    const r = await window.storage.get(key);
+    return (r && r.value) ? r.value : null;
   },
   async set(key, value) {
-    try { localStorage.setItem(key, value); } catch (e) {}
+    return window.storage.set(key, value);
   },
   async delete(key) {
-    try { localStorage.removeItem(key); } catch (e) {}
+    return window.storage.delete(key);
   },
 };
 
@@ -3152,19 +3153,26 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
         const buf = await file.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
         const page = await pdf.getPage(1);
-        // Cap the longest side so the resulting JPEG fits in localStorage (~5 MB).
-        // Aim for at most ~2600 px on the long edge; that keeps plans crisp but small.
         const base = page.getViewport({ scale: 1 });
-        const MAX_SIDE = 2600;
-        const fit = Math.min(2, MAX_SIDE / Math.max(base.width, base.height));
-        pdfFit = fit;
-        const viewport = page.getViewport({ scale: fit > 0 ? fit : 1 });
-        const canvas = document.createElement('canvas');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        const ctx = canvas.getContext('2d');
-        await page.render({ canvasContext: ctx, viewport }).promise;
-        dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+        // Render at the highest resolution that still fits the storage budget, so the
+        // plan stays sharp when zooming in. Step down only if the JPEG gets too large.
+        const BUDGET = 3.6 * 1024 * 1024;                     // ~3.6 MB raw bytes
+        const targets = [4400, 3600, 3000, 2400, 1900];       // long-edge px, high → low
+        for (let i = 0; i < targets.length; i++) {
+          const fit = Math.min(3.5, targets[i] / Math.max(base.width, base.height));
+          const viewport = page.getViewport({ scale: fit > 0 ? fit : 1 });
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(viewport.width);
+          canvas.height = Math.round(viewport.height);
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#ffffff';                          // white base (JPEG has no transparency)
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          setBgStatus(`Gengiver PDF i høj opløsning (${canvas.width}×${canvas.height}) …`);
+          await page.render({ canvasContext: ctx, viewport }).promise;
+          const url = canvas.toDataURL('image/jpeg', 0.85);
+          pdfFit = fit;
+          if (url.length * 0.75 <= BUDGET || i === targets.length - 1) { dataUrl = url; break; }
+        }
       } else if (isImg) {
         setBgStatus('Læser billede …');
         const raw = await new Promise((res, rej) => {
@@ -3173,19 +3181,28 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
           r.onerror = () => rej(new Error('FileReader fejl'));
           r.readAsDataURL(file);
         });
-        // Downscale large images so the stored data URL fits in localStorage
+        // Keep the original if it's already a reasonable size; otherwise re-encode at
+        // the highest resolution that still fits the storage budget (sharper when zoomed).
         dataUrl = await new Promise((res) => {
           const im = new Image();
           im.onload = () => {
-            const MAX_SIDE = 2600;
+            const BUDGET = 3.6 * 1024 * 1024;
             const longest = Math.max(im.naturalWidth, im.naturalHeight);
-            if (longest <= MAX_SIDE) { res(raw); return; }
-            const k = MAX_SIDE / longest;
-            const cv = document.createElement('canvas');
-            cv.width = Math.round(im.naturalWidth * k);
-            cv.height = Math.round(im.naturalHeight * k);
-            cv.getContext('2d').drawImage(im, 0, 0, cv.width, cv.height);
-            res(cv.toDataURL('image/jpeg', 0.8));
+            if (longest <= 4400 && raw.length * 0.75 <= BUDGET) { res(raw); return; }
+            const targets = [4400, 3600, 3000, 2400, 1900];
+            for (let i = 0; i < targets.length; i++) {
+              const k = Math.min(1, targets[i] / longest);
+              const cv = document.createElement('canvas');
+              cv.width = Math.round(im.naturalWidth * k);
+              cv.height = Math.round(im.naturalHeight * k);
+              const cx = cv.getContext('2d');
+              cx.fillStyle = '#ffffff';
+              cx.fillRect(0, 0, cv.width, cv.height);
+              cx.drawImage(im, 0, 0, cv.width, cv.height);
+              const url = cv.toDataURL('image/jpeg', 0.85);
+              if (url.length * 0.75 <= BUDGET || i === targets.length - 1) { res(url); return; }
+            }
+            res(raw);
           };
           im.onerror = () => res(raw);
           im.src = raw;
