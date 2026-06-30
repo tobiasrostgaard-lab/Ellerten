@@ -855,7 +855,40 @@ export default function App() {
 
   const STORAGE_INDEX = 'cable_app_index';        // { projects: [{id, name}], activeId }
   const projKey = (id) => `cable_app_project_${id}`;
+  const bgKey = (id) => `cable_app_bg_${id}`;     // background image stored separately from the bundle
   const genId = () => `p_${Date.now()}_${Math.floor(Math.random()*1e4)}`;
+
+  // Save a drawing. The (potentially large) background is stored under its own key,
+  // so the drawing data (nodes/segments/cables) ALWAYS persists even if the
+  // background is too big for the browser's storage. Returns { okData, okBg }.
+  const saveBundle = async (id, bundle) => {
+    const bg = bundle.bgImage || null;
+    const meta = bg ? { ...bg, dataUrl: undefined } : null;   // bundle keeps position/scale, not the image
+    let okData = false;
+    try { okData = await appStorage.set(projKey(id), JSON.stringify({ ...bundle, bgImage: meta })); } catch (e) { okData = false; }
+    let okBg = true;
+    if (bg && bg.dataUrl) {
+      try { okBg = await appStorage.set(bgKey(id), bg.dataUrl); } catch (e) { okBg = false; }
+    } else {
+      try { await appStorage.delete(bgKey(id)); } catch (e) {}
+    }
+    return { okData, okBg };
+  };
+  // Load a drawing and re-attach its separately-stored background.
+  const loadBundle = async (id) => {
+    let raw = null;
+    try { raw = await appStorage.get(projKey(id)); } catch (e) { raw = null; }
+    if (!raw) return null;
+    let b;
+    try { b = JSON.parse(raw); } catch (e) { return null; }
+    if (b && b.bgImage) {
+      // Newer drawings store the image separately; older ones embed dataUrl in the bundle.
+      if (!b.bgImage.dataUrl) {
+        try { const bg = await appStorage.get(bgKey(id)); if (bg) b.bgImage = { ...b.bgImage, dataUrl: bg }; } catch (e) {}
+      }
+    }
+    return b;
+  };
 
   // Apply a loaded project bundle into state
   const applyBundle = (s) => {
@@ -888,8 +921,8 @@ export default function App() {
           if (tabs.length === 0 && activeId) tabs = [activeId];
           setOpenTabs(tabs);
           if (activeId) {
-            const pRaw = await appStorage.get(projKey(activeId));
-            if (pRaw) { try { applyBundle(JSON.parse(pRaw)); } catch (e) {} }
+            const b = await loadBundle(activeId);
+            if (b) applyBundle(b);
           }
         } else {
           // No usable index → migrate legacy single-project state or create a fresh drawing.
@@ -901,10 +934,10 @@ export default function App() {
               const s = JSON.parse(legacy);
               applyBundle(s);
               name = (s.project?.site ? `=${s.project.site}+${s.project.location||''}` : 'Tegning 1');
-            } catch (e) {}
-            await appStorage.set(projKey(id), legacy);
+              await saveBundle(id, s);
+            } catch (e) { await saveBundle(id, emptyBundle()); }
           } else {
-            await appStorage.set(projKey(id), JSON.stringify(emptyBundle()));
+            await saveBundle(id, emptyBundle());
           }
           const list = [{ id, name }];
           setProjectList(list);
@@ -933,7 +966,7 @@ export default function App() {
   useEffect(() => {
     if (!loaded || !activeProjectId || !autoSave) return;
     const t = setTimeout(() => {
-      appStorage.set(projKey(activeProjectId), JSON.stringify({ project, cableTypes, trayTypes, transformerTypes, segments, nodes, cables, bgImage })).catch(()=>{});
+      saveBundle(activeProjectId, { project, cableTypes, trayTypes, transformerTypes, segments, nodes, cables, bgImage }).catch(()=>{});
     }, 500);
     return () => clearTimeout(t);
   }, [project, cableTypes, trayTypes, transformerTypes, segments, nodes, cables, bgImage, loaded, activeProjectId, autoSave]);
@@ -979,7 +1012,7 @@ export default function App() {
   // Flush current state to storage immediately (used before switching away)
   const flushCurrent = async () => {
     if (!activeProjectId) return;
-    try { await appStorage.set(projKey(activeProjectId), JSON.stringify(currentBundle())); } catch (e) {}
+    await saveBundle(activeProjectId, currentBundle());
   };
 
   const createProject = async (name, template) => {
@@ -993,7 +1026,7 @@ export default function App() {
       const t = datacenterTemplate();
       bundle = { ...emptyBundle(), project: t.project, segments: t.segments, cables: t.cables, nodes: autoLayoutFromSegments(t.segments) };
     }
-    try { await appStorage.set(projKey(id), JSON.stringify(bundle)); } catch (e) {}
+    await saveBundle(id, bundle);
     const list = [...projectList, { id, name: name || `Tegning ${projectList.length + 1}` }];
     setProjectList(list);
     setOpenTabs(t => t.includes(id) ? t : [...t, id]);
@@ -1007,9 +1040,8 @@ export default function App() {
     if (id === activeProjectId) return;
     await flushCurrent();
     try {
-      const pRaw = await appStorage.get(projKey(id));
-      if (pRaw) applyBundle(JSON.parse(pRaw));
-      else applyBundle(emptyBundle());
+      const b = await loadBundle(id);
+      applyBundle(b || emptyBundle());
     } catch (e) { applyBundle(emptyBundle()); }
     setOpenTabs(t => t.includes(id) ? t : [...t, id]);
     setActiveProjectId(id);
@@ -1022,26 +1054,19 @@ export default function App() {
   const commitDraftAndSwitch = async (draft, id) => {
     if (activeProjectId) {
       const bundle = { ...currentBundle(), nodes: draft.nodes, segments: draft.segments, cables: draft.cables, bgImage: draft.bgImage };
-      let ok = true;
-      try { ok = await appStorage.set(projKey(activeProjectId), JSON.stringify(bundle)); } catch (e) { ok = false; }
-      if (!ok) {
-        // Background too large to persist — still save the engineering data so nothing
-        // is lost. Keep the background only for this session.
-        try {
-          const slim = { ...bundle, bgImage: bundle.bgImage ? { ...bundle.bgImage, dataUrl: null, _tooBig: true } : null };
-          await appStorage.set(projKey(activeProjectId), JSON.stringify(slim));
-        } catch (e) {}
-        if (!bgWarnedRef.current) {
-          bgWarnedRef.current = true;
-          try { globalThis.alert('Tegningsgrundlaget er for stort til at gemmes permanent og bevares kun i denne session. Tegningens data (føringsveje, kabler m.m.) er gemt. Prøv evt. en mindre/komprimeret PDF.'); } catch (e) {}
-        }
+      const { okData, okBg } = await saveBundle(activeProjectId, bundle);
+      // Drawing data is saved separately from the background, so it is never lost.
+      // Only warn (once) if the background image itself couldn't be stored.
+      if (okData && okBg === false && !bgWarnedRef.current) {
+        bgWarnedRef.current = true;
+        try { globalThis.alert('Tegningsgrundlaget (baggrunds-PDF) er for stort til at gemmes permanent og bevares kun i denne session. Selve tegningen — føringsveje, kabler og knuder — er gemt. Prøv evt. en mindre/komprimeret PDF.'); } catch (e) {}
       }
       applyBundle(bundle);
     }
     if (id && id !== activeProjectId) {
       try {
-        const pRaw = await appStorage.get(projKey(id));
-        applyBundle(pRaw ? JSON.parse(pRaw) : emptyBundle());
+        const b = await loadBundle(id);
+        applyBundle(b || emptyBundle());
       } catch (e) { applyBundle(emptyBundle()); }
       setOpenTabs(t => t.includes(id) ? t : [...t, id]);
       setActiveProjectId(id);
@@ -1052,11 +1077,11 @@ export default function App() {
   const commitDraftAndCreate = async (draft, name) => {
     if (activeProjectId) {
       const bundle = { ...currentBundle(), nodes: draft.nodes, segments: draft.segments, cables: draft.cables, bgImage: draft.bgImage };
-      try { await appStorage.set(projKey(activeProjectId), JSON.stringify(bundle)); } catch (e) {}
+      await saveBundle(activeProjectId, bundle);
     }
     const id = genId();
     const fresh = emptyBundle();
-    try { await appStorage.set(projKey(id), JSON.stringify(fresh)); } catch (e) {}
+    await saveBundle(id, fresh);
     setProjectList([...projectList, { id, name: name || `Tegning ${projectList.length + 1}` }]);
     setOpenTabs(t => [...t, id]);
     setActiveProjectId(id);
@@ -1069,7 +1094,7 @@ export default function App() {
   const saveAllDrawings = async (draft) => {
     if (activeProjectId) {
       const bundle = { ...currentBundle(), nodes: draft.nodes, segments: draft.segments, cables: draft.cables, bgImage: draft.bgImage };
-      try { await appStorage.set(projKey(activeProjectId), JSON.stringify(bundle)); } catch (e) {}
+      await saveBundle(activeProjectId, bundle);
       applyBundle(bundle);
     }
     try { await appStorage.set(STORAGE_INDEX, JSON.stringify({ projects: projectList, activeId: activeProjectId, openTabs })); } catch (e) {}
@@ -1079,6 +1104,7 @@ export default function App() {
     const proj = projectList.find(p => p.id === id);
     if (!skipConfirm && !safeConfirm(`Slet projektet "${proj?.name ?? id}" permanent?`)) return;
     try { await appStorage.delete(projKey(id)); } catch (e) {}
+    try { await appStorage.delete(bgKey(id)); } catch (e) {}
     const remaining = projectList.filter(p => p.id !== id);
     setOpenTabs(t => t.filter(x => x !== id));
     if (remaining.length === 0) {
@@ -1097,8 +1123,8 @@ export default function App() {
       // switch to the first remaining project
       const next = remaining[0];
       try {
-        const pRaw = await appStorage.get(projKey(next.id));
-        applyBundle(pRaw ? JSON.parse(pRaw) : emptyBundle());
+        const b = await loadBundle(next.id);
+        applyBundle(b || emptyBundle());
       } catch (e) { applyBundle(emptyBundle()); }
       setOpenTabs(t => t.includes(next.id) ? t : [...t, next.id]);
       setActiveProjectId(next.id);
