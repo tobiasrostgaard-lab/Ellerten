@@ -1048,7 +1048,7 @@ export default function App() {
       try { await appStorage.set(projKey(activeProjectId), JSON.stringify(bundle)); } catch (e) {}
       applyBundle(bundle);
     }
-    try { await appStorage.set(STORAGE_INDEX, JSON.stringify({ projects: projectList, activeId: activeProjectId })); } catch (e) {}
+    try { await appStorage.set(STORAGE_INDEX, JSON.stringify({ projects: projectList, activeId: activeProjectId, openTabs })); } catch (e) {}
   };
 
   const deleteProject = async (id, skipConfirm) => {
@@ -3586,14 +3586,19 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
   return (
     <div className="fixed inset-0 bg-white z-30 flex flex-col" style={{ touchAction:'none' }}>
       {/* Drawing tabs — top bar; double-click empty area to collapse */}
-      {openTabs && openTabs.length >= 1 && (
-        collapsedBars.tabs ? thinBar('tabs', '#E9E5D9') : (
+      {(() => {
+        // Always render the bar with at least the active drawing, even if openTabs
+        // somehow got out of sync — so the tab bar (and Forside) never disappears.
+        let tabIds = (openTabs || []).filter(tid => (projectList || []).some(x => x.id === tid));
+        if (activeProjectId && !tabIds.includes(activeProjectId)) tabIds = [activeProjectId, ...tabIds];
+        if (tabIds.length === 0 && activeProjectId) tabIds = [activeProjectId];
+        if (tabIds.length === 0) return null;
+        return collapsedBars.tabs ? thinBar('tabs', '#E9E5D9') : (
         <div onDoubleClick={(e)=>{ if (e.target === e.currentTarget) toggleBar('tabs'); }}
              title="Dobbeltklik på et tomt sted i fane-bjælken for at skjule den"
              className="flex items-stretch overflow-x-auto border-b border-stone-200 py-0.5 select-none" style={{ backgroundColor: '#E9E5D9', scrollbarWidth:'thin' }}>
-          {openTabs.map(tid => {
-            const p = (projectList || []).find(x => x.id === tid);
-            if (!p) return null;
+          {tabIds.map(tid => {
+            const p = (projectList || []).find(x => x.id === tid) || { id: tid, name: 'Tegning' };
             return (
               <div key={p.id} onClick={()=>switchToTab(p.id)}
                    draggable
@@ -3606,7 +3611,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
                    style={p.id===activeProjectId ? { backgroundColor: '#D7D0BC', color: '#44403c' } : undefined}
                    title="Træk for at ændre rækkefølgen">
                 <Pencil size={11}/> {p.name}
-                {openTabs.length > 1 && (
+                {tabIds.length > 1 && (
                   <button onClick={(e)=>onCloseTab(e, p.id)} title="Luk fane (sletter ikke tegningen)"
                           className="ml-3 rounded-md p-0.5 hover:bg-stone-300/70 text-stone-500">
                     <X size={12}/>
@@ -3627,8 +3632,8 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
             <Home size={13}/> Forside
           </button>
         </div>
-        )
-      )}
+        );
+      })()}
 
       {/* Header — sits just below the tab bar, same thickness */}
       {/* Header — double-click to collapse to a thin strip */}
