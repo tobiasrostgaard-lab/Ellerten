@@ -3249,10 +3249,10 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
         const base = page.getViewport({ scale: 1 });
         // Render at the highest resolution that still fits the storage budget, so the
         // plan stays sharp when zooming in. Step down only if the JPEG gets too large.
-        const BUDGET = 1.4 * 1024 * 1024;                     // ~1.4 MB raw bytes — keep backgrounds small to fit shared quota
-        const targets = [4400, 3600, 3000, 2400, 1900];       // long-edge px, high → low
+        const BUDGET = 0.95 * 1024 * 1024;                    // ~0.95 MB — keeps drawings small so ~5 fit in localStorage
+        const targets = [2600, 2100, 1700, 1300];             // long-edge px, high → low
         for (let i = 0; i < targets.length; i++) {
-          const fit = Math.min(3.5, targets[i] / Math.max(base.width, base.height));
+          const fit = Math.min(2, targets[i] / Math.max(base.width, base.height));
           const viewport = page.getViewport({ scale: fit > 0 ? fit : 1 });
           const canvas = document.createElement('canvas');
           canvas.width = Math.round(viewport.width);
@@ -3262,7 +3262,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
           ctx.fillRect(0, 0, canvas.width, canvas.height);
           setBgStatus(`Gengiver PDF i høj opløsning (${canvas.width}×${canvas.height}) …`);
           await page.render({ canvasContext: ctx, viewport }).promise;
-          const url = canvas.toDataURL('image/jpeg', 0.85);
+          const url = canvas.toDataURL('image/jpeg', 0.8);
           pdfFit = fit;
           if (url.length * 0.75 <= BUDGET || i === targets.length - 1) { dataUrl = url; break; }
         }
@@ -3279,10 +3279,10 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
         dataUrl = await new Promise((res) => {
           const im = new Image();
           im.onload = () => {
-            const BUDGET = 1.4 * 1024 * 1024;
+            const BUDGET = 0.95 * 1024 * 1024;
             const longest = Math.max(im.naturalWidth, im.naturalHeight);
-            if (longest <= 4400 && raw.length * 0.75 <= BUDGET) { res(raw); return; }
-            const targets = [4400, 3600, 3000, 2400, 1900];
+            if (longest <= 2600 && raw.length * 0.75 <= BUDGET) { res(raw); return; }
+            const targets = [2600, 2100, 1700, 1300];
             for (let i = 0; i < targets.length; i++) {
               const k = Math.min(1, targets[i] / longest);
               const cv = document.createElement('canvas');
@@ -3292,7 +3292,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
               cx.fillStyle = '#ffffff';
               cx.fillRect(0, 0, cv.width, cv.height);
               cx.drawImage(im, 0, 0, cv.width, cv.height);
-              const url = cv.toDataURL('image/jpeg', 0.85);
+              const url = cv.toDataURL('image/jpeg', 0.8);
               if (url.length * 0.75 <= BUDGET || i === targets.length - 1) { res(url); return; }
             }
             res(raw);
@@ -3879,7 +3879,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
           </div>
           {storageInfo && (storageInfo.usedMB != null || storageInfo.backend) && (
             <div className="text-[11px] text-stone-500">
-              {storageInfo.backend ? `Lager: ${storageInfo.backend === 'indexeddb' ? 'IndexedDB' : storageInfo.backend === 'localstorage' ? 'localStorage (begrænset!)' : storageInfo.backend} · ` : ''}
+              {storageInfo.backend ? `Lager: ${storageInfo.backend === 'indexeddb' ? 'IndexedDB' : (storageInfo.backend === 'localStorage' || storageInfo.backend === 'localstorage') ? 'localStorage (~5 MB)' : storageInfo.backend} · ` : ''}
               {storageInfo.usedMB != null ? `${storageInfo.usedMB.toFixed(1)} MB${storageInfo.quotaMB ? ` af ~${Math.round(storageInfo.quotaMB)} MB` : ''}` : ''}
               {storageInfo.persisted === true ? ' · vedvarende' : storageInfo.persisted === false ? ' · ikke-vedvarende' : ''}
             </div>
