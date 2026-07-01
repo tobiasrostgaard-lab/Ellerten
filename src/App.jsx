@@ -23,6 +23,7 @@ const appStorage = {
   async setImage(key, dataUrl) { return this.set(key, dataUrl); },
   async getImage(key) { return this.get(key); },
   async backend() { return 'window.storage'; },
+  async migrate() { /* no-op for window.storage */ },
 };
 
 
@@ -916,6 +917,7 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
+        try { if (appStorage.migrate) await appStorage.migrate(); } catch (e) {}
         const idxRaw = await appStorage.get(STORAGE_INDEX);
         let idx = null;
         try { idx = idxRaw ? JSON.parse(idxRaw) : null; } catch (e) { idx = null; }
