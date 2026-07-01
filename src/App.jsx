@@ -1016,7 +1016,7 @@ export default function App() {
   const applyBundle = (s) => {
     setProject(s.project ?? DEFAULT_PROJECT);
     setCableTypes(s.cableTypes ?? DEFAULT_CABLE_TYPES);
-    setTrayTypes(s.trayTypes ?? DEFAULT_TRAY_TYPES);
+    setTrayTypes({ ...DEFAULT_TRAY_TYPES, ...(s.trayTypes || {}) });
     setTransformerTypes(s.transformerTypes ?? DEFAULT_TRANSFORMER_TYPES);
     setSegments(s.segments ?? {});
     setNodes(s.nodes ?? {});
@@ -1375,7 +1375,7 @@ export default function App() {
       if (!d.cables || !d.segments) throw new Error('Missing required fields');
       setProject(d.project ?? DEFAULT_PROJECT);
       setCableTypes(d.cableTypes ?? DEFAULT_CABLE_TYPES);
-      setTrayTypes(d.trayTypes ?? DEFAULT_TRAY_TYPES);
+      setTrayTypes({ ...DEFAULT_TRAY_TYPES, ...(d.trayTypes || {}) });
       setTransformerTypes(d.transformerTypes ?? DEFAULT_TRANSFORMER_TYPES);
       setSegments(d.segments ?? {});
       setNodes(d.nodes ?? autoLayoutFromSegments(d.segments ?? {}));
