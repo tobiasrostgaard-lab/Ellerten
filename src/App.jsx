@@ -876,7 +876,10 @@ export default function App() {
     let okBg = true;
     if (bg && bg.dataUrl) {
       try { okBg = await appStorage.setImage(bgKey(id), bg.dataUrl); } catch (e) { okBg = false; }
-    } else {
+    } else if (!bg) {
+      // Only remove the stored image when the drawing genuinely has NO background.
+      // If bg is metadata-only (image just not in memory right now), leave it untouched
+      // — deleting here was destroying backgrounds on tab switch.
       try { await appStorage.delete(bgKey(id)); } catch (e) {}
     }
     return { okData, okBg };
@@ -939,6 +942,15 @@ export default function App() {
         if (list.length > 0) {
           setProjectList(list);
           const validIds = new Set(list.map(p => p.id));
+          // Free space: drop backgrounds for drawings that no longer exist, plus probe/legacy keys.
+          try {
+            const bgKeys = await appStorage.keys(bgKey(''));
+            for (const k of bgKeys) {
+              const pid = String(k).slice(bgKey('').length);
+              if (pid && !validIds.has(pid)) { try { await appStorage.delete(bgKey(pid)); } catch (e) {} }
+            }
+            try { await appStorage.delete('__probe__'); } catch (e) {}
+          } catch (e) {}
           const activeId = (idx && idx.activeId && validIds.has(idx.activeId)) ? idx.activeId : list[0].id;
           setActiveProjectId(activeId);
           let tabs = ((idx && idx.openTabs) ?? []).filter(t => validIds.has(t));
@@ -2184,6 +2196,9 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
   const [lSegs, setLSegs] = useState(() => ({ ...segments }));
   const [lCables, setLCables] = useState(() => [...(cables || [])]);
   const [lBg, setLBg] = useState(() => bgImage || null);  // { dataUrl, x, y, scale, opacity, name }
+  // Keep the app-level background in sync with the editor, so every save path
+  // (auto-save, project switch, create) uses the current background, never a stale one.
+  useEffect(() => { if (setBgImage) setBgImage(lBg ? { ...lBg } : null); }, [lBg]);
   // Undo history — snapshots of {nodes, segs, cables}. lBg excluded (large data URLs).
   const undoStackRef = useRef([]);
   const isUndoingRef = useRef(false);
