@@ -9,9 +9,6 @@ import * as XLSX from 'xlsx';
 const appStorage = (() => {
   const DB_NAME = 'cable_designer_db', STORE = 'kv';
   let _dbp = null;
-  // Robust open: if the object store is missing (a database left half-created by an
-  // earlier build), reopen at a higher version to create it — otherwise every op
-  // would silently fail and fall back to the tiny localStorage.
   const openDB = () => {
     if (_dbp) return _dbp;
     _dbp = new Promise((resolve, reject) => {
@@ -109,8 +106,6 @@ const appStorage = (() => {
       try { await putVal('__probe__', '1'); const v = await getVal('__probe__'); return v === '1' ? 'indexeddb' : 'localstorage'; }
       catch (e) { return 'localstorage'; }
     },
-    // Move any cable_* data still in localStorage into IndexedDB, verify, then remove
-    // the localStorage copy — freeing the small localStorage budget.
     async migrate() {
       try {
         await openDB();
@@ -1475,7 +1470,7 @@ export default function App() {
       {editing && <EditModal editing={editing} setEditing={setEditing} cableTypes={cableTypes} trayTypes={trayTypes} transformerTypes={transformerTypes} segments={segments} setCables={setCables} setSegments={setSegments} setCableTypes={setCableTypes} setTrayTypes={setTrayTypes} setTransformerTypes={setTransformerTypes} cables={cables} />}
       {sizingOpen && <SizingModal close={() => setSizingOpen(false)} project={project} cableTypes={cableTypes} segments={segments} cables={cables} setCables={setCables} />}
       {drawingOpen && <DrawingModal key={activeProjectId} close={() => setDrawingOpen(false)} goHome={() => { setDrawingOpen(false); setTab('project'); }} segments={segments} setSegments={setSegments} nodes={nodes} setNodes={setNodes} trayTypes={trayTypes} cables={cables} setCables={setCables} cableTypes={cableTypes} bgImage={bgImage} setBgImage={setBgImage} project={project}
-        projectList={projectList} openTabs={openTabs} activeProjectId={activeProjectId} commitDraftAndSwitch={commitDraftAndSwitch} commitDraftAndCreate={commitDraftAndCreate} closeTab={closeTab} reorderTabs={reorderTabs} loadDrawingNodes={loadDrawingNodes} patchDrawingNode={patchDrawingNode} collectUsedIds={collectUsedIds} saveAllDrawings={saveAllDrawings} autoSave={autoSave} toggleAutoSave={toggleAutoSave} />}
+        projectList={projectList} openTabs={openTabs} activeProjectId={activeProjectId} commitDraftAndSwitch={commitDraftAndSwitch} commitDraftAndCreate={commitDraftAndCreate} closeTab={closeTab} reorderTabs={reorderTabs} renameProject={renameProject} loadDrawingNodes={loadDrawingNodes} patchDrawingNode={patchDrawingNode} collectUsedIds={collectUsedIds} saveAllDrawings={saveAllDrawings} autoSave={autoSave} toggleAutoSave={toggleAutoSave} />}
       {newProjectOpen && <NewProjectModal close={() => setNewProjectOpen(false)} createProject={createProject} />}
     </div>
   );
@@ -2284,7 +2279,7 @@ function AnalysisTab({ cables, A, cableTypes, segments }) {
 // =========================
 // DRAWING MODAL — interactive cable tray layout editor
 // =========================
-function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project, projectList, openTabs, activeProjectId, commitDraftAndSwitch, commitDraftAndCreate, closeTab, reorderTabs, loadDrawingNodes, patchDrawingNode, collectUsedIds, saveAllDrawings, autoSave, toggleAutoSave }) {
+function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project, projectList, openTabs, activeProjectId, commitDraftAndSwitch, commitDraftAndCreate, closeTab, reorderTabs, renameProject, loadDrawingNodes, patchDrawingNode, collectUsedIds, saveAllDrawings, autoSave, toggleAutoSave }) {
   // local working state
   // Node shape: { x, y, kind: 'junction'|'board'|'load', ...meta }
   //   board meta: { board_type, In_main }
@@ -2419,6 +2414,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
   const dragTabRef = useRef(null);                           // id of the drawing tab being dragged
   const reservedIdsRef = useRef(new Set());                  // element IDs used by OTHER drawings (keep new IDs unique)
   const [dragOverTab, setDragOverTab] = useState(null);      // id of tab currently hovered during a drag
+  const [renamingTab, setRenamingTab] = useState(null);      // { id, value } while renaming a tab inline
   const [linkDialog, setLinkDialog] = useState(null);        // { nodeId } when linking a node to another drawing
   const [multiEdit, setMultiEdit] = useState(null);         // { kind } when editing multiple
   const [editSeg, setEditSeg] = useState(null);       // segment being edited (dialog open)
@@ -3816,18 +3812,30 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
           {tabIds.map(tid => {
             const p = (projectList || []).find(x => x.id === tid) || { id: tid, name: 'Tegning' };
             return (
-              <div key={p.id} onClick={()=>switchToTab(p.id)}
-                   draggable
+              <div key={p.id} onClick={()=>{ if (!renamingTab || renamingTab.id !== p.id) switchToTab(p.id); }}
+                   draggable={!(renamingTab && renamingTab.id === p.id)}
+                   onContextMenu={(e)=>{ e.preventDefault(); e.stopPropagation(); setRenamingTab({ id: p.id, value: p.name }); }}
                    onDragStart={(e)=>{ dragTabRef.current = p.id; e.dataTransfer.effectAllowed='move'; try { e.dataTransfer.setData('text/plain', p.id); } catch(err){} }}
                    onDragOver={(e)=>{ if (dragTabRef.current && dragTabRef.current !== p.id) { e.preventDefault(); e.dataTransfer.dropEffect='move'; if (dragOverTab !== p.id) setDragOverTab(p.id); } }}
                    onDragLeave={()=>{ if (dragOverTab === p.id) setDragOverTab(null); }}
                    onDrop={(e)=>{ e.preventDefault(); const from = dragTabRef.current; if (from && from !== p.id) reorderTabs && reorderTabs(from, p.id); dragTabRef.current=null; setDragOverTab(null); }}
                    onDragEnd={()=>{ dragTabRef.current=null; setDragOverTab(null); }}
-                   className={`group pl-3 pr-2 py-1 text-xs whitespace-nowrap border-r border-stone-300/50 flex items-center gap-1.5 cursor-grab active:cursor-grabbing rounded-t-lg ${dragOverTab===p.id ? 'ring-2 ring-stone-400' : ''} ${p.id===activeProjectId ? 'font-semibold' : 'text-stone-600 hover:bg-white/40'}`}
+                   className={`group pl-3 pr-2 py-1 text-xs whitespace-nowrap border-r border-stone-300/50 flex items-center gap-1.5 ${(renamingTab && renamingTab.id === p.id) ? 'cursor-text' : 'cursor-grab active:cursor-grabbing'} rounded-t-lg ${dragOverTab===p.id ? 'ring-2 ring-stone-400' : ''} ${p.id===activeProjectId ? 'font-semibold' : 'text-stone-600 hover:bg-white/40'}`}
                    style={p.id===activeProjectId ? { backgroundColor: '#D7D0BC', color: '#44403c' } : undefined}
-                   title="Træk for at ændre rækkefølgen">
-                <Pencil size={11}/> {p.name}
-                {tabIds.length > 1 && (
+                   title="Klik for at åbne · højreklik for at omdøbe · træk for at flytte">
+                <Pencil size={11}/>
+                {(renamingTab && renamingTab.id === p.id) ? (
+                  <input autoFocus value={renamingTab.value}
+                         onChange={(e)=>setRenamingTab({ id: p.id, value: e.target.value })}
+                         onClick={(e)=>e.stopPropagation()}
+                         onBlur={()=>{ const nm = (renamingTab.value || '').trim(); if (nm) renameProject && renameProject(p.id, nm); setRenamingTab(null); }}
+                         onKeyDown={(e)=>{ if (e.key === 'Enter') { const nm = (renamingTab.value || '').trim(); if (nm) renameProject && renameProject(p.id, nm); setRenamingTab(null); } else if (e.key === 'Escape') { setRenamingTab(null); } }}
+                         className="bg-white/90 border border-stone-300 rounded px-1 text-xs outline-none focus:ring-1 focus:ring-stone-400"
+                         style={{ width: `${Math.max(6, (renamingTab.value || '').length + 1)}ch`, color:'#44403c' }}/>
+                ) : (
+                  <span>{p.name}</span>
+                )}
+                {tabIds.length > 1 && !(renamingTab && renamingTab.id === p.id) && (
                   <button onClick={(e)=>onCloseTab(e, p.id)} title="Luk fane (sletter ikke tegningen)"
                           className="ml-3 rounded-md p-0.5 hover:bg-stone-300/70 text-stone-500">
                     <X size={12}/>
