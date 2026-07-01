@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Plus, Edit2, Trash2, Download, RefreshCw, AlertCircle, CheckCircle, Settings, Cable, Layers, BookOpen, BarChart3, FileDown, Database, X, ChevronRight, Zap, GitBranch, Calculator, Upload, FileText, Save, ZoomIn, ZoomOut, Pencil, Move, Link2, MousePointer2, Grid3x3, HelpCircle, Globe, Home } from 'lucide-react';
+import { Plus, Edit2, Trash2, Download, RefreshCw, AlertCircle, CheckCircle, Settings, Cable, Layers, BookOpen, BarChart3, FileDown, Database, X, ChevronRight, Zap, GitBranch, Calculator, Upload, FileText, Save, ZoomIn, ZoomOut, Pencil, Move, Link2, MousePointer2, Grid3x3, HelpCircle, Globe, Home, ExternalLink } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
 // =========================
@@ -161,26 +161,73 @@ function safeConfirm(msg) {
 // =========================
 // DEFAULT DATA
 // =========================
-const mkCT = (conductors, cs, S, od, iz, par=1) => ({conductors, cross_section:cs, S_mm2:S, od_mm:od, iz_a:iz, is_parallel:par, area_mm2:area(od)});
+const mkCT = (conductors, cs, S, od, iz, par=1, material='Cu') => ({
+  conductors, cross_section:cs, S_mm2:S, od_mm:od, iz_a:iz, is_parallel:par, area_mm2:area(od),
+  material,                                              // 'Cu' | 'Al'
+  cores: conductors <= 1 ? 'single' : 'multi',           // enleder | flerleder
+  usage: (par > 1 || S >= 95) ? 'main' : 'distribution', // hovedkabel | fordelingskabel
+});
 
+// Low-voltage cable catalogue (0.6/1 kV), based on the common NKT families used in
+// Denmark: PFXP (copper, PEX, 3- and 5-conductor) and AXKJ (aluminium, PEX, 4-conductor).
+// Iz is the base current-carrying capacity at reference method E (perforated tray,
+// 30 °C, single circuit) per IEC 60364-5-52; the app derates it further.
 const DEFAULT_CABLE_TYPES = {
-  'NYM-J 5G16':  mkCT(5,'5G16',16,21,73),
-  'NYM-J 5G2.5': mkCT(5,'5G2.5',2.5,14,23),
-  'NYM-J 3G2.5': mkCT(3,'3G2.5',2.5,11,26),
-  'NYM-J 3G1.5': mkCT(3,'3G1.5',1.5,8.5,19),
-  'Cu 8x240':    mkCT(5,'5G240×8',240,115,3320,8),
-  'Cu 6x240':    mkCT(5,'5G240×6',240,100,2490,6),
-  'Cu 6x185':    mkCT(5,'5G185×6',185,95,2100,6),
-  'Cu 4x240':    mkCT(5,'5G240×4',240,80,1660,4),
-  'Cu 4x185':    mkCT(5,'5G185×4',185,70,1400,4),
-  'Cu 5G240':    mkCT(5,'5G240',240,45,415),
-  'Cu 5G120':    mkCT(5,'5G120',120,33,280),
-  'Cu 5G95':     mkCT(5,'5G95',95,30,230),
-  'Cu 5G70':     mkCT(5,'5G70',70,26,185),
-  'Cu 5G35':     mkCT(5,'5G35',35,20,115),
-  'Cu 5G16':     mkCT(5,'5G16',16,15,73),
-  'Cu 5G6':      mkCT(5,'5G6',6,13,38),
-  'Cu 3G2.5':    mkCT(3,'3G2.5',2.5,11,26),
+  // ---- Kobber, installationskabel PFXP (PEX), 3-leder m. beskyttelsesleder ----
+  'PFXP 3G1.5': mkCT(3,'3G1.5',1.5,9,19),
+  'PFXP 3G2.5': mkCT(3,'3G2.5',2.5,10.5,26),
+  'PFXP 3G4':   mkCT(3,'3G4',4,12,34),
+  'PFXP 3G6':   mkCT(3,'3G6',6,13,44),
+  'PFXP 3G10':  mkCT(3,'3G10',10,16,60),
+  'PFXP 3G16':  mkCT(3,'3G16',16,19,80),
+  // ---- Kobber PFXP (PEX), 5-leder (3F+N+PE) ----
+  'PFXP 5G1.5': mkCT(5,'5G1.5',1.5,11,18),
+  'PFXP 5G2.5': mkCT(5,'5G2.5',2.5,12.5,25),
+  'PFXP 5G4':   mkCT(5,'5G4',4,14,34),
+  'PFXP 5G6':   mkCT(5,'5G6',6,15.5,43),
+  'PFXP 5G10':  mkCT(5,'5G10',10,18,60),
+  'PFXP 5G16':  mkCT(5,'5G16',16,21,80),
+  'PFXP 5G25':  mkCT(5,'5G25',25,25,101),
+  'PFXP 5G35':  mkCT(5,'5G35',35,28,126),
+  'PFXP 5G50':  mkCT(5,'5G50',50,33,153),
+  'PFXP 5G70':  mkCT(5,'5G70',70,39,196),
+  'PFXP 5G95':  mkCT(5,'5G95',95,44,238),
+  'PFXP 5G120': mkCT(5,'5G120',120,49,276),
+  'PFXP 5G150': mkCT(5,'5G150',150,54,319),
+  'PFXP 5G185': mkCT(5,'5G185',185,60,364),
+  'PFXP 5G240': mkCT(5,'5G240',240,67,430),
+  // ---- Aluminium, jord-/distributionskabel AXKJ (PEX), 4-leder (3F+PEN) ----
+  'AXKJ 4x25':  mkCT(4,'4x25',25,26,79,1,'Al'),
+  'AXKJ 4x35':  mkCT(4,'4x35',35,29,98,1,'Al'),
+  'AXKJ 4x50':  mkCT(4,'4x50',50,33,119,1,'Al'),
+  'AXKJ 4x70':  mkCT(4,'4x70',70,38,153,1,'Al'),
+  'AXKJ 4x95':  mkCT(4,'4x95',95,43,186,1,'Al'),
+  'AXKJ 4x120': mkCT(4,'4x120',120,47,215,1,'Al'),
+  'AXKJ 4x150': mkCT(4,'4x150',150,52,249,1,'Al'),
+  'AXKJ 4x185': mkCT(4,'4x185',185,57,284,1,'Al'),
+  'AXKJ 4x240': mkCT(4,'4x240',240,64,335,1,'Al'),
+  'AXKJ 4x300': mkCT(4,'4x300',300,71,382,1,'Al'),
+  // ---- Kobber, enleder (1-leder), til store hovedkabler ----
+  'Cu 1x95':  mkCT(1,'1x95',95,20,298,1,'Cu'),
+  'Cu 1x120': mkCT(1,'1x120',120,22,346,1,'Cu'),
+  'Cu 1x150': mkCT(1,'1x150',150,24,399,1,'Cu'),
+  'Cu 1x185': mkCT(1,'1x185',185,27,456,1,'Cu'),
+  'Cu 1x240': mkCT(1,'1x240',240,30,538,1,'Cu'),
+  'Cu 1x300': mkCT(1,'1x300',300,33,621,1,'Cu'),
+  'Cu 1x400': mkCT(1,'1x400',400,38,754,1,'Cu'),
+  // ---- Aluminium, enleder (1-leder), til store hovedkabler ----
+  'Al 1x120': mkCT(1,'1x120',120,22,269,1,'Al'),
+  'Al 1x150': mkCT(1,'1x150',150,24,310,1,'Al'),
+  'Al 1x185': mkCT(1,'1x185',185,27,354,1,'Al'),
+  'Al 1x240': mkCT(1,'1x240',240,30,418,1,'Al'),
+  'Al 1x300': mkCT(1,'1x300',300,33,482,1,'Al'),
+  'Al 1x400': mkCT(1,'1x400',400,38,585,1,'Al'),
+  'Al 1x500': mkCT(1,'1x500',500,42,674,1,'Al'),
+  // ---- Parallelle føringer til store hovedkabler ----
+  'PFXP 2x(5G240)':  mkCT(5,'5G240×2',240,95,860,2,'Cu'),
+  'PFXP 3x(5G240)':  mkCT(5,'5G240×3',240,116,1290,3,'Cu'),
+  'AXKJ 2x(4x240)':  mkCT(4,'4x240×2',240,90,670,2,'Al'),
+  'AXKJ 3x(4x240)':  mkCT(4,'4x240×3',240,111,1005,3,'Al'),
 };
 // Cable-tray catalogue. Trays come in 100 mm and 150 mm heights, in widths from
 // 100 mm to 900 mm in 50 mm steps. Key is `width x height`.
@@ -768,8 +815,14 @@ function exportProjectXlsx(drawings, project, filename) {
 
   // Kabeltyper (union across drawings)
   const allCab = {}; drawings.forEach(d => Object.entries(d.cableTypes || {}).forEach(([n, t]) => { allCab[n] = t; }));
-  const ct_sh = [['Kabeltype', 'Ledere', 'Tværsnit', 'Parallel', 'S [mm²]', 'Yderdiameter [mm]', 'Areal [mm²]', 'Iz grund [A]']];
-  Object.entries(allCab).forEach(([n, t]) => ct_sh.push([n, t.conductors, t.cross_section, t.is_parallel, t.S_mm2, t.od_mm, t.area_mm2, t.iz_a]));
+  const ct_sh = [['Kabeltype', 'Materiale', 'Ledertype', 'Anvendelse', 'Ledere', 'Tværsnit', 'Parallel', 'S [mm²]', 'Yderdiameter [mm]', 'Areal [mm²]', 'Iz grund [A]']];
+  const matDa = { Cu: 'Kobber', Al: 'Aluminium' }, coreDa = { single: 'Enleder', multi: 'Flerleder' }, useDa = { main: 'Hovedkabel', distribution: 'Fordelingskabel' };
+  Object.entries(allCab).forEach(([n, t]) => {
+    const material = t.material || (/AXKJ|^Al\b|^Al\s|alumin/i.test(n) ? 'Al' : 'Cu');
+    const cores = t.cores || ((t.conductors <= 1) ? 'single' : 'multi');
+    const usage = t.usage || ((t.is_parallel > 1 || t.S_mm2 >= 95) ? 'main' : 'distribution');
+    ct_sh.push([n, matDa[material] || material, coreDa[cores] || cores, useDa[usage] || usage, t.conductors, t.cross_section, t.is_parallel, t.S_mm2, t.od_mm, t.area_mm2, t.iz_a]);
+  });
   sheet(ct_sh, 'Kabeltyper');
 
   XLSX.writeFile(wb, filename || `projekt_${project.site || 'kabelsystem'}.xlsx`);
@@ -1099,6 +1152,10 @@ export default function App() {
   const [projectList, setProjectList] = useState([]);
   const [openTabs, setOpenTabs] = useState([]);   // project ids currently open as drawing tabs
   const [activeProjectId, setActiveProjectId] = useState(null);
+  const dragTabRefG = useRef(null);               // global tab bar: id being dragged
+  const [dragOverTabG, setDragOverTabG] = useState(null);
+  const [renamingTabG, setRenamingTabG] = useState(null);
+  const tabBarRef = useRef(null);                 // global tab bar element (for drag-out detection)
   const [autoSave, setAutoSave] = useState(() => {
     try { return globalThis?.localStorage?.getItem?.('cable_app_autosave') !== 'off'; } catch (e) { return true; }
   });
@@ -1166,7 +1223,7 @@ export default function App() {
   // Apply a loaded project bundle into state
   const applyBundle = (s) => {
     setProject(s.project ?? DEFAULT_PROJECT);
-    setCableTypes(s.cableTypes ?? DEFAULT_CABLE_TYPES);
+    setCableTypes({ ...DEFAULT_CABLE_TYPES, ...(s.cableTypes || {}) });
     setTrayTypes({ ...DEFAULT_TRAY_TYPES, ...(s.trayTypes || {}) });
     setTransformerTypes(s.transformerTypes ?? DEFAULT_TRANSFORMER_TYPES);
     setSegments(s.segments ?? {});
@@ -1215,7 +1272,10 @@ export default function App() {
             }
             try { await appStorage.delete('__probe__'); } catch (e) {}
           } catch (e) {}
-          const activeId = (idx && idx.activeId && validIds.has(idx.activeId)) ? idx.activeId : list[0].id;
+          let wantDrawing = null;
+          try { wantDrawing = new URLSearchParams(window.location.search).get('drawing'); } catch (e) {}
+          const activeId = (wantDrawing && validIds.has(wantDrawing)) ? wantDrawing
+            : (idx && idx.activeId && validIds.has(idx.activeId)) ? idx.activeId : list[0].id;
           setActiveProjectId(activeId);
           let tabs = ((idx && idx.openTabs) ?? []).filter(t => validIds.has(t));
           if (activeId && !tabs.includes(activeId)) tabs = [activeId, ...tabs];
@@ -1225,6 +1285,8 @@ export default function App() {
             const b = await loadBundle(activeId);
             if (b) applyBundle(b);
           }
+          // Opened via ?drawing= (a torn-off window): jump straight into that drawing.
+          if (wantDrawing && validIds.has(wantDrawing)) setDrawingOpen(true);
           // Re-persist a healthy index (recovers names/order after any earlier loss).
           try { await appStorage.set(STORAGE_INDEX, JSON.stringify({ projects: list, activeId, openTabs: tabs })); } catch (e) {}
         } else {
@@ -1349,6 +1411,19 @@ export default function App() {
     setOpenTabs(t => t.includes(id) ? t : [...t, id]);
     setActiveProjectId(id);
     setTab('project');
+  };
+
+  // Open a drawing tab (switch to it and open the editor) from the global tab bar.
+  const openDrawingTab = async (id) => {
+    if (id !== activeProjectId) { try { await switchProject(id); } catch (e) {} }
+    setDrawingOpen(true);
+  };
+  // Tear a drawing off into its own browser window (loads the app focused on it).
+  const popOutDrawing = (id) => {
+    try {
+      const url = (window.location.pathname || '/') + '?drawing=' + encodeURIComponent(id);
+      window.open(url, '_blank', 'width=1280,height=860');
+    } catch (e) {}
   };
 
   // Save a draft from the drawing editor (nodes/segs/cables/bg) into the active
@@ -1551,7 +1626,7 @@ export default function App() {
       const d = JSON.parse(text);
       if (!d.cables || !d.segments) throw new Error('Missing required fields');
       setProject(d.project ?? DEFAULT_PROJECT);
-      setCableTypes(d.cableTypes ?? DEFAULT_CABLE_TYPES);
+      setCableTypes({ ...DEFAULT_CABLE_TYPES, ...(d.cableTypes || {}) });
       setTrayTypes({ ...DEFAULT_TRAY_TYPES, ...(d.trayTypes || {}) });
       setTransformerTypes(d.transformerTypes ?? DEFAULT_TRANSFORMER_TYPES);
       setSegments(d.segments ?? {});
@@ -1642,6 +1717,53 @@ export default function App() {
             </button>
           </div>
         </header>
+        {/* Global drawing tab bar — always accessible (shown whenever the editor is closed). */}
+        {openTabs.length > 0 && !drawingOpen && (
+          <div ref={tabBarRef} className="flex items-stretch overflow-x-auto border-b border-stone-200 select-none" style={{ backgroundColor:'#E9E5D9', scrollbarWidth:'thin' }}>
+            {openTabs.filter(id => (projectList||[]).find(p => p.id === id)).map(id => {
+              const nameOf = (projectList||[]).find(p => p.id === id)?.name || 'Tegning';
+              const isRen = renamingTabG && renamingTabG.id === id;
+              return (
+                <div key={id}
+                     draggable={!isRen}
+                     onClick={()=>{ if (!isRen) openDrawingTab(id); }}
+                     onContextMenu={(e)=>{ e.preventDefault(); setRenamingTabG({ id, value: nameOf }); }}
+                     onDragStart={(e)=>{ dragTabRefG.current = id; e.dataTransfer.effectAllowed='move'; try { e.dataTransfer.setData('text/plain', id); } catch(err){} }}
+                     onDragOver={(e)=>{ if (dragTabRefG.current && dragTabRefG.current !== id) { e.preventDefault(); e.dataTransfer.dropEffect='move'; if (dragOverTabG !== id) setDragOverTabG(id); } }}
+                     onDragLeave={()=>{ if (dragOverTabG === id) setDragOverTabG(null); }}
+                     onDrop={(e)=>{ e.preventDefault(); const from = dragTabRefG.current; if (from && from !== id) reorderTabs(from, id); dragTabRefG.current=null; setDragOverTabG(null); }}
+                     onDragEnd={(e)=>{ const from = dragTabRefG.current; const bar = tabBarRef.current;
+                        if (from && bar) { const r = bar.getBoundingClientRect(); if (e.clientY > r.bottom + 45 || e.clientY < r.top - 45 || e.clientX < r.left - 70 || e.clientX > r.right + 70) popOutDrawing(from); }
+                        dragTabRefG.current=null; setDragOverTabG(null); }}
+                     className={`group px-3 py-1.5 text-xs whitespace-nowrap border-r border-stone-300/50 flex items-center gap-1.5 rounded-t-lg ${isRen ? 'cursor-text' : 'cursor-grab active:cursor-grabbing'} ${dragOverTabG===id ? 'ring-2 ring-stone-400' : ''} ${id===activeProjectId ? 'font-semibold' : 'text-stone-600 hover:bg-white/40'}`}
+                     style={id===activeProjectId ? { backgroundColor:'#D7D0BC', color:'#44403c' } : undefined}
+                     title="Klik: åbn · højreklik: omdøb · træk: flyt rækkefølge · træk ud eller ⧉: nyt vindue">
+                  <Layers size={12}/>
+                  {isRen ? (
+                    <input autoFocus value={renamingTabG.value}
+                           onChange={(e)=>setRenamingTabG({ id, value: e.target.value })}
+                           onClick={(e)=>e.stopPropagation()}
+                           onBlur={()=>{ const nm=(renamingTabG.value||'').trim(); if(nm) renameProject(id, nm); setRenamingTabG(null); }}
+                           onKeyDown={(e)=>{ if(e.key==='Enter'){ const nm=(renamingTabG.value||'').trim(); if(nm) renameProject(id, nm); setRenamingTabG(null); } else if(e.key==='Escape'){ setRenamingTabG(null); } }}
+                           className="bg-white/90 border border-stone-300 rounded px-1 text-xs outline-none focus:ring-1 focus:ring-stone-400" style={{ width:`${Math.max(6,(renamingTabG.value||'').length+1)}ch`, color:'#44403c' }}/>
+                  ) : (
+                    <span>{nameOf}</span>
+                  )}
+                  {!isRen && (
+                    <button onClick={(e)=>{ e.stopPropagation(); popOutDrawing(id); }} title="Åbn i nyt vindue"
+                            className="ml-1 rounded-md p-0.5 hover:bg-stone-300/70 text-stone-500"><ExternalLink size={11}/></button>
+                  )}
+                  {openTabs.length > 1 && !isRen && (
+                    <button onClick={(e)=>{ e.stopPropagation(); closeTab(id); }} title="Luk fane (sletter ikke tegningen)"
+                            className="rounded-md p-0.5 hover:bg-stone-300/70 text-stone-500"><X size={12}/></button>
+                  )}
+                </div>
+              );
+            })}
+            <button onClick={()=>setNewProjectOpen(true)} title="Ny tegning"
+                    className="px-3 py-1.5 text-xs text-stone-600 hover:bg-white/50 flex items-center gap-1 shrink-0"><Plus size={13}/> Ny</button>
+          </div>
+        )}
       </div>
 
       <main className="p-3 lg:p-6 lg:max-w-6xl lg:mx-auto space-y-3">
@@ -1660,7 +1782,7 @@ export default function App() {
       {editing && <EditModal editing={editing} setEditing={setEditing} cableTypes={cableTypes} trayTypes={trayTypes} transformerTypes={transformerTypes} segments={segments} setCables={setCables} setSegments={setSegments} setCableTypes={setCableTypes} setTrayTypes={setTrayTypes} setTransformerTypes={setTransformerTypes} cables={cables} />}
       {sizingOpen && <SizingModal close={() => setSizingOpen(false)} project={project} cableTypes={cableTypes} segments={segments} cables={cables} setCables={setCables} />}
       {drawingOpen && <DrawingModal key={activeProjectId} close={() => setDrawingOpen(false)} goHome={() => { setDrawingOpen(false); setTab('project'); }} segments={segments} setSegments={setSegments} nodes={nodes} setNodes={setNodes} trayTypes={trayTypes} cables={cables} setCables={setCables} cableTypes={cableTypes} bgImage={bgImage} setBgImage={setBgImage} project={project}
-        projectList={projectList} openTabs={openTabs} activeProjectId={activeProjectId} commitDraftAndSwitch={commitDraftAndSwitch} commitDraftAndCreate={commitDraftAndCreate} closeTab={closeTab} reorderTabs={reorderTabs} renameProject={renameProject} loadDrawingNodes={loadDrawingNodes} patchDrawingNode={patchDrawingNode} collectUsedIds={collectUsedIds} saveAllDrawings={saveAllDrawings} autoSave={autoSave} toggleAutoSave={toggleAutoSave} />}
+        projectList={projectList} openTabs={openTabs} activeProjectId={activeProjectId} commitDraftAndSwitch={commitDraftAndSwitch} commitDraftAndCreate={commitDraftAndCreate} closeTab={closeTab} reorderTabs={reorderTabs} renameProject={renameProject} popOutDrawing={popOutDrawing} loadDrawingNodes={loadDrawingNodes} patchDrawingNode={patchDrawingNode} collectUsedIds={collectUsedIds} saveAllDrawings={saveAllDrawings} autoSave={autoSave} toggleAutoSave={toggleAutoSave} />}
       {newProjectOpen && <NewProjectModal close={() => setNewProjectOpen(false)} createProject={createProject} />}
     </div>
   );
@@ -2127,6 +2249,9 @@ function TraysTab({ segments, setSegments, trayTypes, A, setEditing, setDrawingO
 // =========================
 function CatalogTab({ cableTypes, setCableTypes, trayTypes, setTrayTypes, transformerTypes, setTransformerTypes, setEditing }) {
   const [sub, setSub] = useState('cables');
+  const [fMat, setFMat] = useState('all');    // materiale: all | Cu | Al
+  const [fCore, setFCore] = useState('all');  // ledere: all | multi | single
+  const [fUse, setFUse] = useState('all');    // anvendelse: all | main | distribution
   return (
     <div className="space-y-2">
       <div className="bg-white p-2 rounded-xl shadow-sm grid grid-cols-3 gap-1 text-xs">
@@ -2135,33 +2260,85 @@ function CatalogTab({ cableTypes, setCableTypes, trayTypes, setTrayTypes, transf
         <button onClick={()=>setSub('xfmr')} className={`py-2 rounded ${sub==='xfmr'?'bg-stone-800 text-white':'text-stone-700'}`}>Transformers</button>
       </div>
 
-      {sub === 'cables' && (
+      {sub === 'cables' && (() => {
+        // Category info for a cable (with fallback for older entries without metadata).
+        const catInfo = (n, t) => ({
+          material: t.material || (/AXKJ|^Al\b|^Al\s|alumin/i.test(n) ? 'Al' : 'Cu'),
+          cores: t.cores || ((t.conductors <= 1) ? 'single' : 'multi'),
+          usage: t.usage || ((t.is_parallel > 1 || t.S_mm2 >= 95) ? 'main' : 'distribution'),
+        });
+        const matL = { Cu: 'Kobber', Al: 'Aluminium' };
+        const coreL = { multi: 'Flerleder', single: 'Enleder' };
+        const useL = { main: 'Hovedkabler', distribution: 'Fordelingskabler' };
+        const entries = Object.entries(cableTypes).map(([n, t]) => ({ n, t, c: catInfo(n, t) }));
+        const filtered = entries.filter(e =>
+          (fMat === 'all' || e.c.material === fMat) &&
+          (fCore === 'all' || e.c.cores === fCore) &&
+          (fUse === 'all' || e.c.usage === fUse));
+        // group by material + usage, ordered Cu→Al, main→distribution
+        const order = (e) => `${e.c.material === 'Cu' ? 0 : 1}${e.c.usage === 'main' ? 0 : 1}`;
+        const groups = {};
+        filtered.forEach(e => { const k = `${e.c.material}|${e.c.usage}`; (groups[k] = groups[k] || []).push(e); });
+        const groupKeys = Object.keys(groups).sort((a, b) => order(groups[a][0]).localeCompare(order(groups[b][0])));
+        const chip = (active, on, label) => (
+          <button onClick={on} className={`px-2.5 py-1 rounded-full text-xs font-semibold ${active ? 'bg-stone-800 text-white' : 'bg-stone-100 text-stone-600'}`}>{label}</button>
+        );
+        return (
         <>
-          <div className="flex justify-end">
-            <button onClick={()=>setEditing({ kind:'cable_type', item:{ name:'New cable', conductors:5, cross_section:'5G6', S_mm2:6, od_mm:13, iz_a:38, is_parallel:1 }, isNew:true })} className="bg-stone-800 text-white px-3 py-2 rounded-lg text-sm flex items-center gap-1"><Plus size={16}/> Tilføj</button>
+          <div className="bg-white p-2 rounded-xl shadow-sm space-y-1.5">
+            <div className="flex flex-wrap gap-1 items-center"><span className="text-[11px] text-stone-400 w-16">Materiale</span>
+              {chip(fMat==='all', ()=>setFMat('all'), 'Alle')}{chip(fMat==='Cu', ()=>setFMat('Cu'), 'Kobber')}{chip(fMat==='Al', ()=>setFMat('Al'), 'Aluminium')}</div>
+            <div className="flex flex-wrap gap-1 items-center"><span className="text-[11px] text-stone-400 w-16">Ledere</span>
+              {chip(fCore==='all', ()=>setFCore('all'), 'Alle')}{chip(fCore==='multi', ()=>setFCore('multi'), 'Flerleder')}{chip(fCore==='single', ()=>setFCore('single'), 'Enleder')}</div>
+            <div className="flex flex-wrap gap-1 items-center"><span className="text-[11px] text-stone-400 w-16">Anvendelse</span>
+              {chip(fUse==='all', ()=>setFUse('all'), 'Alle')}{chip(fUse==='main', ()=>setFUse('main'), 'Hovedkabler')}{chip(fUse==='distribution', ()=>setFUse('distribution'), 'Fordelingskabler')}</div>
           </div>
-          {Object.entries(cableTypes).map(([n, t]) => (
-            <div key={n} className="bg-white p-3 rounded-xl shadow-sm">
-              <div className="flex justify-between items-start">
-                <div>
-                  <div className="font-bold text-stone-800">{n}</div>
-                  <div className="text-xs text-stone-500">{t.cross_section} · {t.conductors} cond · {t.is_parallel}× parallel</div>
+          <div className="flex justify-between items-center">
+            <span className="text-xs text-stone-500">{filtered.length} kabeltyper</span>
+            <button onClick={()=>setEditing({ kind:'cable_type', item:{ name:'Nyt kabel', conductors:5, cross_section:'5G6', S_mm2:6, od_mm:15.5, iz_a:43, is_parallel:1, material:'Cu' }, isNew:true })} className="bg-stone-800 text-white px-3 py-2 rounded-lg text-sm flex items-center gap-1"><Plus size={16}/> Tilføj</button>
+          </div>
+          {groupKeys.map(gk => {
+            const [mat, use] = gk.split('|');
+            const list = groups[gk].sort((a, b) => (a.t.S_mm2 - b.t.S_mm2) || a.n.localeCompare(b.n));
+            return (
+              <div key={gk} className="space-y-2">
+                <div className="flex items-center gap-2 pt-1">
+                  <span className="text-xs font-bold text-stone-700">{matL[mat]} · {useL[use]}</span>
+                  <span className="text-[11px] text-stone-400">({list.length})</span>
+                  <div className="flex-1 border-t border-stone-200"></div>
                 </div>
-                <div className="flex gap-1">
-                  <button onClick={()=>setEditing({ kind:'cable_type', item:{name:n, ...t}, isNew:false })} className="p-2 text-stone-700"><Edit2 size={16}/></button>
-                  <button onClick={()=>{ if(safeConfirm(`Slet ${n}?`)){ const c={...cableTypes}; delete c[n]; setCableTypes(c); } }} className="p-2 text-red-600"><Trash2 size={16}/></button>
-                </div>
+                {list.map(({ n, t, c }) => (
+                  <div key={n} className="bg-white p-3 rounded-xl shadow-sm">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <div className="font-bold text-stone-800">{n}</div>
+                        <div className="text-xs text-stone-500">{t.cross_section} · {t.conductors} ledere · {t.is_parallel}× parallel</div>
+                        <div className="flex gap-1 mt-1">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold" style={{ backgroundColor: c.material==='Al' ? '#E8EAF6' : '#FDE7C9', color: c.material==='Al' ? '#283593' : '#8a5000' }}>{matL[c.material]}</span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-stone-100 text-stone-600">{coreL[c.cores]}</span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold" style={{ backgroundColor: c.usage==='main' ? '#E3F2FD' : '#E8F5E9', color: c.usage==='main' ? '#0B3D91' : '#1b5e20' }}>{useL[c.usage]}</span>
+                        </div>
+                      </div>
+                      <div className="flex gap-1">
+                        <button onClick={()=>setEditing({ kind:'cable_type', item:{name:n, ...t}, isNew:false })} className="p-2 text-stone-700"><Edit2 size={16}/></button>
+                        <button onClick={()=>{ if(safeConfirm(`Slet ${n}?`)){ const c2={...cableTypes}; delete c2[n]; setCableTypes(c2); } }} className="p-2 text-red-600"><Trash2 size={16}/></button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1 text-xs mt-1">
+                      <Mini label="S [mm²]" v={t.S_mm2}/>
+                      <Mini label="OD" v={`${t.od_mm}mm`}/>
+                      <Mini label="Areal" v={`${t.area_mm2}`}/>
+                      <Mini label="Iz" v={`${t.iz_a}A`}/>
+                    </div>
+                  </div>
+                ))}
               </div>
-              <div className="grid grid-cols-4 gap-1 text-xs mt-1">
-                <Mini label="S [mm²]" v={t.S_mm2}/>
-                <Mini label="OD" v={`${t.od_mm}mm`}/>
-                <Mini label="Area" v={`${t.area_mm2}`}/>
-                <Mini label="Iz" v={`${t.iz_a}A`}/>
-              </div>
-            </div>
-          ))}
+            );
+          })}
+          {filtered.length === 0 && <div className="text-sm text-stone-400 text-center py-6">Ingen kabler matcher filtrene.</div>}
         </>
-      )}
+        );
+      })()}
 
       {sub === 'trays' && (
         <>
@@ -2522,7 +2699,7 @@ function AnalysisTab({ cables, A, cableTypes, segments }) {
 // =========================
 // DRAWING MODAL — interactive cable tray layout editor
 // =========================
-function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project, projectList, openTabs, activeProjectId, commitDraftAndSwitch, commitDraftAndCreate, closeTab, reorderTabs, renameProject, loadDrawingNodes, patchDrawingNode, collectUsedIds, saveAllDrawings, autoSave, toggleAutoSave }) {
+function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project, projectList, openTabs, activeProjectId, commitDraftAndSwitch, commitDraftAndCreate, closeTab, reorderTabs, renameProject, popOutDrawing, loadDrawingNodes, patchDrawingNode, collectUsedIds, saveAllDrawings, autoSave, toggleAutoSave }) {
   // local working state
   // Node shape: { x, y, kind: 'junction'|'board'|'load', ...meta }
   //   board meta: { board_type, In_main }
@@ -2655,6 +2832,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
   const [marquee, setMarquee] = useState(null);              // {x0,y0,x1,y1} in world coords while dragging
   const marqueeRef = useRef(null);                           // synchronous marquee state
   const dragTabRef = useRef(null);                           // id of the drawing tab being dragged
+  const tabBarRefE = useRef(null);                           // editor tab bar element (drag-out detection)
   const reservedIdsRef = useRef(new Set());                  // element IDs used by OTHER drawings (keep new IDs unique)
   const [dragOverTab, setDragOverTab] = useState(null);      // id of tab currently hovered during a drag
   const [renamingTab, setRenamingTab] = useState(null);      // { id, value } while renaming a tab inline
@@ -3990,12 +4168,14 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
       cos_phi: Number(tb.cos_phi || 0.9),
       route: [], crossDrawing: true,
     };
-    setLCables(prev => [...prev, cable]);
-    // Reference marker on the target board (other drawing) — visible, not double-counted.
+    // Exactly one cable record on this drawing (replace any identical cross-drawing cable).
+    const nextCables = [...lCables.filter(c => !(c.crossDrawing && c.from === fromId && c.toExt && c.toExt.pid === bPid && c.toExt.nid === bId)), cable];
+    setLCables(nextCables);
+    // Reference marker on the target board (other drawing) — NOT a cable, just shows the supply.
     if (patchDrawingNode) {
       try { await patchDrawingNode(bPid, bId, { incomingXCable: { pid: activeProjectId, nid: fromId, name: aName, cableId: cid } }); } catch (e) {}
     }
-    try { saveAllDrawings && saveAllDrawings({ ...draftSnapshot(), cables: [...lCables, cable] }); } catch (e) {}
+    try { saveAllDrawings && saveAllDrawings({ ...draftSnapshot(), cables: nextCables }); } catch (e) {}
     setXCableDialog(null);
   };
 
@@ -4091,7 +4271,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
         if (tabIds.length === 0 && activeProjectId) tabIds = [activeProjectId];
         // Always render the bar (even with no tabs) so "Ny" and "Forside" stay reachable.
         return collapsedBars.tabs ? thinBar('tabs', '#E9E5D9') : (
-        <div onDoubleClick={(e)=>{ if (e.target === e.currentTarget) toggleBar('tabs'); }}
+        <div ref={tabBarRefE} onDoubleClick={(e)=>{ if (e.target === e.currentTarget) toggleBar('tabs'); }}
              title="Dobbeltklik på et tomt sted i fane-bjælken for at skjule den"
              className="flex items-stretch overflow-x-auto border-b border-stone-200 py-0.5 select-none" style={{ backgroundColor: '#E9E5D9', scrollbarWidth:'thin' }}>
           {tabIds.map(tid => {
@@ -4104,10 +4284,12 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
                    onDragOver={(e)=>{ if (dragTabRef.current && dragTabRef.current !== p.id) { e.preventDefault(); e.dataTransfer.dropEffect='move'; if (dragOverTab !== p.id) setDragOverTab(p.id); } }}
                    onDragLeave={()=>{ if (dragOverTab === p.id) setDragOverTab(null); }}
                    onDrop={(e)=>{ e.preventDefault(); const from = dragTabRef.current; if (from && from !== p.id) reorderTabs && reorderTabs(from, p.id); dragTabRef.current=null; setDragOverTab(null); }}
-                   onDragEnd={()=>{ dragTabRef.current=null; setDragOverTab(null); }}
+                   onDragEnd={(e)=>{ const from = dragTabRef.current; const bar = tabBarRefE.current;
+                      if (from && bar && popOutDrawing) { const r = bar.getBoundingClientRect(); if (e.clientY > r.bottom + 50 || e.clientY < r.top - 50 || e.clientX < r.left - 70 || e.clientX > r.right + 70) popOutDrawing(from); }
+                      dragTabRef.current=null; setDragOverTab(null); }}
                    className={`group pl-3 pr-2 py-1 text-xs whitespace-nowrap border-r border-stone-300/50 flex items-center gap-1.5 ${(renamingTab && renamingTab.id === p.id) ? 'cursor-text' : 'cursor-grab active:cursor-grabbing'} rounded-t-lg ${dragOverTab===p.id ? 'ring-2 ring-stone-400' : ''} ${p.id===activeProjectId ? 'font-semibold' : 'text-stone-600 hover:bg-white/40'}`}
                    style={p.id===activeProjectId ? { backgroundColor: '#D7D0BC', color: '#44403c' } : undefined}
-                   title="Klik for at åbne · højreklik for at omdøbe · træk for at flytte">
+                   title="Klik: åbn · højreklik: omdøb · træk: flyt · træk ud eller ⧉: nyt vindue">
                 <Pencil size={11}/>
                 {(renamingTab && renamingTab.id === p.id) ? (
                   <input autoFocus value={renamingTab.value}
@@ -4120,9 +4302,15 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
                 ) : (
                   <span>{p.name}</span>
                 )}
+                {!(renamingTab && renamingTab.id === p.id) && popOutDrawing && (
+                  <button onClick={(e)=>{ e.stopPropagation(); popOutDrawing(p.id); }} title="Åbn i nyt vindue"
+                          className="ml-1 rounded-md p-0.5 hover:bg-stone-300/70 text-stone-500">
+                    <ExternalLink size={11}/>
+                  </button>
+                )}
                 {tabIds.length > 1 && !(renamingTab && renamingTab.id === p.id) && (
                   <button onClick={(e)=>onCloseTab(e, p.id)} title="Luk fane (sletter ikke tegningen)"
-                          className="ml-3 rounded-md p-0.5 hover:bg-stone-300/70 text-stone-500">
+                          className="rounded-md p-0.5 hover:bg-stone-300/70 text-stone-500">
                     <X size={12}/>
                   </button>
                 )}
@@ -4822,7 +5010,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
           {/* Cross-drawing cable badges — incoming (a board on another drawing feeds this board) */}
           {Object.entries(lNodes).filter(([id, p]) => p && p.incomingXCable).map(([id, p]) => {
             const ic = p.incomingXCable;
-            const label = `⭠ kabel fra ${ic.name}/${ic.nid}`;
+            const label = `⭠ forsynet fra ${ic.name}/${ic.nid}`;
             const w = 12 + label.length * 5.6;
             const bx = p.x + 12, by = p.y + 33;
             return (
