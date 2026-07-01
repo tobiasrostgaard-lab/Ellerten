@@ -6,25 +6,128 @@ import * as XLSX from 'xlsx';
 // STORAGE ABSTRACTION
 // Single place to swap window.storage (Claude artifact) for localStorage (Vercel).
 // =========================
-const appStorage = {
-  async get(key) {
-    const r = await window.storage.get(key);
-    return (r && r.value) ? r.value : null;
-  },
-  async set(key, value) {
-    try { await window.storage.set(key, value); return true; } catch (e) { return false; }
-  },
-  async delete(key) {
-    return window.storage.delete(key);
-  },
-  async keys(prefix) {
-    try { const r = await window.storage.list(prefix || ''); return (r && r.keys) ? r.keys : []; } catch (e) { return []; }
-  },
-  async setImage(key, dataUrl) { return this.set(key, dataUrl); },
-  async getImage(key) { return this.get(key); },
-  async backend() { return 'window.storage'; },
-  async migrate() { /* no-op for window.storage */ },
-};
+const appStorage = (() => {
+  const DB_NAME = 'cable_designer_db', STORE = 'kv';
+  let _dbp = null;
+  // Robust open: if the object store is missing (a database left half-created by an
+  // earlier build), reopen at a higher version to create it — otherwise every op
+  // would silently fail and fall back to the tiny localStorage.
+  const openDB = () => {
+    if (_dbp) return _dbp;
+    _dbp = new Promise((resolve, reject) => {
+      let req;
+      try { req = indexedDB.open(DB_NAME, 1); } catch (e) { reject(e); return; }
+      req.onupgradeneeded = () => { try { const db = req.result; if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE); } catch (e) {} };
+      req.onblocked = () => reject(new Error('blocked'));
+      req.onerror = () => reject(req.error);
+      req.onsuccess = () => {
+        const db = req.result;
+        if (db.objectStoreNames.contains(STORE)) { resolve(db); return; }
+        const nextV = (db.version || 1) + 1;
+        try { db.close(); } catch (e) {}
+        let req2;
+        try { req2 = indexedDB.open(DB_NAME, nextV); } catch (e) { reject(e); return; }
+        req2.onupgradeneeded = () => { try { const db2 = req2.result; if (!db2.objectStoreNames.contains(STORE)) db2.createObjectStore(STORE); } catch (e) {} };
+        req2.onblocked = () => reject(new Error('blocked'));
+        req2.onsuccess = () => resolve(req2.result);
+        req2.onerror = () => reject(req2.error);
+      };
+    });
+    _dbp.catch(() => { _dbp = null; });
+    return _dbp;
+  };
+  const putVal = async (key, value) => {
+    const db = await openDB();
+    await new Promise((resolve, reject) => {
+      const t = db.transaction(STORE, 'readwrite');
+      t.objectStore(STORE).put(value, key);
+      t.oncomplete = () => resolve();
+      t.onerror = () => reject(t.error);
+      t.onabort = () => reject(t.error);
+    });
+  };
+  const getVal = async (key) => {
+    const db = await openDB();
+    return await new Promise((resolve) => {
+      const t = db.transaction(STORE, 'readonly');
+      const r = t.objectStore(STORE).get(key);
+      r.onsuccess = () => resolve(r.result != null ? r.result : null);
+      r.onerror = () => resolve(null);
+    });
+  };
+  const dataUrlToBlob = (dataUrl) => {
+    const i = dataUrl.indexOf(',');
+    const head = dataUrl.slice(0, i), b64 = dataUrl.slice(i + 1);
+    const mime = (head.match(/:(.*?);/) || [])[1] || 'image/jpeg';
+    const bin = atob(b64); const len = bin.length; const arr = new Uint8Array(len);
+    for (let j = 0; j < len; j++) arr[j] = bin.charCodeAt(j);
+    return new Blob([arr], { type: mime });
+  };
+  return {
+    async get(key) {
+      try {
+        const v = await getVal(key);
+        if (v != null) return typeof v === 'string' ? v : v;
+        try { const ls = localStorage.getItem(key); if (ls != null) return ls; } catch (e) {}
+        return null;
+      } catch (e) {
+        try { return localStorage.getItem(key); } catch (e2) { return null; }
+      }
+    },
+    async set(key, value) {
+      try { await putVal(key, value); return true; }
+      catch (e) { try { localStorage.setItem(key, value); return true; } catch (e2) { return false; } }
+    },
+    async delete(key) {
+      try { const db = await openDB(); await new Promise((resolve) => { const t = db.transaction(STORE, 'readwrite'); t.objectStore(STORE).delete(key); t.oncomplete = () => resolve(); t.onerror = () => resolve(); }); } catch (e) {}
+      try { localStorage.removeItem(key); } catch (e) {}
+    },
+    async keys(prefix) {
+      try {
+        const db = await openDB();
+        const all = await new Promise((resolve) => { const t = db.transaction(STORE, 'readonly'); const r = t.objectStore(STORE).getAllKeys(); r.onsuccess = () => resolve(r.result || []); r.onerror = () => resolve([]); });
+        let ks = all.map(String);
+        try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && ks.indexOf(k) === -1) ks.push(k); } } catch (e) {}
+        return prefix ? ks.filter(k => k.indexOf(prefix) === 0) : ks;
+      } catch (e) {
+        try { const ks = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k) ks.push(k); } return prefix ? ks.filter(k => k.indexOf(prefix) === 0) : ks; } catch (e2) { return []; }
+      }
+    },
+    async setImage(key, dataUrl) {
+      try { await putVal(key, dataUrlToBlob(dataUrl)); return true; }
+      catch (e) { try { return await this.set(key, dataUrl); } catch (e2) { return false; } }
+    },
+    async getImage(key) {
+      try {
+        const v = await getVal(key);
+        if (v == null) { try { const ls = localStorage.getItem(key); return ls || null; } catch (e) { return null; } }
+        if (typeof v === 'string') return v;
+        return await new Promise((resolve) => { const fr = new FileReader(); fr.onload = () => resolve(fr.result); fr.onerror = () => resolve(null); fr.readAsDataURL(v); });
+      } catch (e) { try { return localStorage.getItem(key); } catch (e2) { return null; } }
+    },
+    async backend() {
+      try { await putVal('__probe__', '1'); const v = await getVal('__probe__'); return v === '1' ? 'indexeddb' : 'localstorage'; }
+      catch (e) { return 'localstorage'; }
+    },
+    // Move any cable_* data still in localStorage into IndexedDB, verify, then remove
+    // the localStorage copy — freeing the small localStorage budget.
+    async migrate() {
+      try {
+        await openDB();
+        const lsKeys = [];
+        for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.indexOf('cable_') === 0) lsKeys.push(k); }
+        for (const k of lsKeys) {
+          try {
+            const existing = await getVal(k);
+            if (existing == null) { const val = localStorage.getItem(k); if (val != null) await putVal(k, val); }
+            const check = await getVal(k);
+            if (check != null) { try { localStorage.removeItem(k); } catch (e) {} }
+          } catch (e) {}
+        }
+      } catch (e) {}
+    },
+  };
+})();
 
 
 // =========================
