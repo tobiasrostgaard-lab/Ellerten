@@ -2666,12 +2666,14 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
   const clearSelection = () => { selectedNodesRef.current = []; setSelectedNodes([]); setSelectedSeg(null); };
 
   // Effective colour of a segment (manual override or auto from tray width)
-  // Connected-network categories: segments that are physically connected form one
-  // category. All segments in a network share one colour (sizes may differ).
+  // Connected-network categories: tray segments form ONE category only when they meet
+  // at a junction (knude). Boards (tavler) and loads are terminals — they do NOT merge
+  // separate runs, even if several runs connect to the same board.
   // Returns: { networks: [{ id, segIds:[], nodeIds:Set, color, widths:Set, count }],
   //            segNet: { segId -> networkId } }
   const networkInfo = useMemo(() => {
-    // Union-Find over nodes, joined by segments
+    const kindOf = (nid) => lNodes[nid]?.kind || 'junction';
+    // Union-Find over SEGMENT ids.
     const parent = {};
     const find = (x) => { while (parent[x] !== undefined && parent[x] !== x) { parent[x] = parent[parent[x]] ?? parent[x]; x = parent[x]; } return x; };
     const union = (a, b) => {
@@ -2680,11 +2682,19 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
       const ra = find(a), rb = find(b);
       if (ra !== rb) parent[ra] = rb;
     };
-    Object.values(lSegs).forEach(s => { union(s.from, s.to); });
-    // group segments by their root node
+    Object.keys(lSegs).forEach(id => { if (parent[id] === undefined) parent[id] = id; });
+    // Segments that share the SAME junction node belong to the same category.
+    const segsByJunction = {};
+    Object.entries(lSegs).forEach(([id, s]) => {
+      [s.from, s.to].forEach(nid => {
+        if (nid && kindOf(nid) === 'junction') (segsByJunction[nid] = segsByJunction[nid] || []).push(id);
+      });
+    });
+    Object.values(segsByJunction).forEach(list => { for (let i = 1; i < list.length; i++) union(list[0], list[i]); });
+    // group segments by their root segment
     const groups = {};
     Object.entries(lSegs).forEach(([id, s]) => {
-      const root = find(s.from);
+      const root = find(id);
       if (!groups[root]) groups[root] = { id: root, segIds: [], nodeIds: new Set(), widths: new Set(), explicitColors: [] };
       groups[root].segIds.push(id);
       groups[root].nodeIds.add(s.from); groups[root].nodeIds.add(s.to);
@@ -2706,7 +2716,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
       return { id: g.id, segIds: g.segIds, nodeIds: g.nodeIds, color, widths: g.widths, count: g.segIds.length };
     }).sort((a,b)=>b.count-a.count);
     return { networks, segNet, byId: Object.fromEntries(networks.map(n=>[n.id,n])) };
-  }, [lSegs, trayTypes]);
+  }, [lSegs, trayTypes, lNodes]);
 
   // Colour shown for a segment = its network's colour (so connected = same colour)
   const segColor = (s, id) => {
