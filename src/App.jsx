@@ -182,13 +182,18 @@ const DEFAULT_CABLE_TYPES = {
   'Cu 5G6':      mkCT(5,'5G6',6,13,38),
   'Cu 3G2.5':    mkCT(3,'3G2.5',2.5,11,26),
 };
-const DEFAULT_TRAY_TYPES = {
-  '100x60':  { width_mm:100, height_mm:60,  gross_area_mm2:6000,  max_fill_percent:40 },
-  '200x60':  { width_mm:200, height_mm:60,  gross_area_mm2:12000, max_fill_percent:40 },
-  '300x100': { width_mm:300, height_mm:100, gross_area_mm2:30000, max_fill_percent:40 },
-  '400x100': { width_mm:400, height_mm:100, gross_area_mm2:40000, max_fill_percent:40 },
-  '600x100': { width_mm:600, height_mm:100, gross_area_mm2:60000, max_fill_percent:40 },
-};
+// Cable-tray catalogue. Trays come in 100 mm and 150 mm heights, in widths from
+// 100 mm to 900 mm in 50 mm steps. Key is `width x height`.
+const DEFAULT_TRAY_TYPES = (() => {
+  const t = {};
+  const heights = [100, 150];
+  for (let w = 100; w <= 900; w += 50) {
+    for (const h of heights) {
+      t[`${w}x${h}`] = { width_mm: w, height_mm: h, gross_area_mm2: w * h, max_fill_percent: 40 };
+    }
+  }
+  return t;
+})();
 const DEFAULT_TRANSFORMER_TYPES = {
   'TR 2500 kVA': { S_kVA:2500, U_pri_kV:10, U_sec_V:400, uk_pct:6.0 },
   'TR 1600 kVA': { S_kVA:1600, U_pri_kV:10, U_sec_V:400, uk_pct:6.0 },
@@ -205,12 +210,20 @@ const TRAY_WIDTH_COLORS = {
   100: '#1565C0',  // blue
   150: '#00838f',  // teal
   200: '#2e7d32',  // green
+  250: '#827717',  // olive
   300: '#f9a825',  // amber
-  400: '#1565C0',  // blue
+  350: '#ef6c00',  // orange
+  400: '#d84315',  // deep orange
   450: '#6a1b9a',  // purple
-  500: '#2e7d32',  // green
+  500: '#283593',  // indigo
+  550: '#0097a7',  // cyan
   600: '#c62828',  // red
+  650: '#ad1457',  // pink
+  700: '#5d4037',  // brown
+  750: '#455a64',  // blue grey
   800: '#37474F',  // dark slate
+  850: '#4527a0',  // deep purple
+  900: '#263238',  // near-black slate
 };
 // Colour for a given tray width (mm) — nearest defined band if not exact.
 function trayWidthColor(width_mm) {
