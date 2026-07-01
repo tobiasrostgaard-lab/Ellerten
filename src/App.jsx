@@ -624,6 +624,157 @@ function exportXlsx(state, A, filename) {
   XLSX.writeFile(wb, filename || `cable_system_${project.site}.xlsx`);
 }
 
+// Compute categories across ALL drawings. Segments join a category when they meet
+// at a junction; boards/loads are terminals. Junctions linked across drawings
+// (off-page connectors) are treated as the SAME point, so their categories merge.
+function computeProjectCategories(drawings) {
+  const gnode = (did, nid) => `${did}::${nid}`;
+  const gseg = (did, sid) => `${did}::${sid}`;
+  // node union-find (merges cross-drawing links)
+  const np = {};
+  const nfind = (x) => { while (np[x] !== undefined && np[x] !== x) { np[x] = np[np[x]] ?? np[x]; x = np[x]; } return x; };
+  const nunion = (a, b) => { if (np[a] === undefined) np[a] = a; if (np[b] === undefined) np[b] = b; const ra = nfind(a), rb = nfind(b); if (ra !== rb) np[ra] = rb; };
+  drawings.forEach(d => {
+    Object.entries(d.nodes || {}).forEach(([nid, n]) => {
+      const g = gnode(d.id, nid);
+      if (np[g] === undefined) np[g] = g;
+      if (n && n.link && n.link.pid && n.link.nid) nunion(g, gnode(n.link.pid, n.link.nid));
+    });
+  });
+  const kindOf = (d, nid) => (d.nodes && d.nodes[nid] && d.nodes[nid].kind) || 'junction';
+  // segment union-find via canonical junction nodes
+  const sp = {};
+  const sfind = (x) => { while (sp[x] !== undefined && sp[x] !== x) { sp[x] = sp[sp[x]] ?? sp[x]; x = sp[x]; } return x; };
+  const sunion = (a, b) => { if (sp[a] === undefined) sp[a] = a; if (sp[b] === undefined) sp[b] = b; const ra = sfind(a), rb = sfind(b); if (ra !== rb) sp[ra] = rb; };
+  drawings.forEach(d => { Object.keys(d.segments || {}).forEach(sid => { const g = gseg(d.id, sid); if (sp[g] === undefined) sp[g] = g; }); });
+  const segsByJunction = {};
+  drawings.forEach(d => {
+    Object.entries(d.segments || {}).forEach(([sid, s]) => {
+      [s.from, s.to].forEach(nid => {
+        if (nid && kindOf(d, nid) === 'junction') {
+          const canon = nfind(gnode(d.id, nid));
+          (segsByJunction[canon] = segsByJunction[canon] || []).push(gseg(d.id, sid));
+        }
+      });
+    });
+  });
+  Object.values(segsByJunction).forEach(list => { for (let i = 1; i < list.length; i++) sunion(list[0], list[i]); });
+  const groups = {};
+  drawings.forEach(d => {
+    Object.entries(d.segments || {}).forEach(([sid, s]) => {
+      const root = sfind(gseg(d.id, sid));
+      if (!groups[root]) groups[root] = { segs: [], drawings: new Set(), widths: new Set() };
+      groups[root].segs.push({ drawingName: d.name, segId: sid, seg: s, width: d.trayTypes && d.trayTypes[s.tray_type] ? d.trayTypes[s.tray_type].width_mm : '' });
+      groups[root].drawings.add(d.name);
+      const w = d.trayTypes && d.trayTypes[s.tray_type] ? d.trayTypes[s.tray_type].width_mm : null;
+      if (w) groups[root].widths.add(w);
+    });
+  });
+  const cats = Object.values(groups).sort((a, b) => b.segs.length - a.segs.length);
+  // map global segment id -> category number
+  const catOf = {};
+  cats.forEach((c, i) => c.segs.forEach(x => { catOf[`${x.drawingName}::${x.segId}`] = i + 1; }));
+  return { cats, catOf };
+}
+
+// Whole-project Excel export, in Danish. `drawings` = [{ id, name, project, nodes,
+// segments, cables, cableTypes, trayTypes }].
+function exportProjectXlsx(drawings, project, filename) {
+  const wb = XLSX.utils.book_new();
+  const sheet = (rows, name) => XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), name.slice(0, 31));
+  const num = (v) => (v === undefined || v === null || v === '') ? '' : v;
+
+  // Projekt
+  sheet([
+    ['Parameter', 'Værdi', 'Note'],
+    ['Anlæg (site)', project.site, 'IEC 81346'],
+    ['Placering', project.location, ''],
+    ['Beskrivelse', project.description, ''],
+    ['Omgivelsestemperatur [°C]', project.ambient_c, 'Bestemmer k_temp'],
+    ['k_temp', kAmbient(project.ambient_c), 'IEC 60364-5-52 tabel B.52.14'],
+    ['Z_kilde sløjfe [mΩ]', project.z_source_mohm, 'Kilde + skinne-impedans'],
+    ['ρ (Cu @ 70°C)', RHO_70, 'Bruges i ΔU og kortslutning'],
+    ['LS-grænse', project.ls_threshold, 'Ib/Iz grænse LS2 vs LS3'],
+    ['Antal tegninger', drawings.length, ''],
+  ], 'Projekt');
+
+  // Tegninger
+  const dl = [['Tegning', 'Tavler', 'Laster', 'Knuder', 'Føringsvejssegmenter', 'Kabler']];
+  drawings.forEach(d => {
+    const nodes = Object.values(d.nodes || {});
+    dl.push([
+      d.name,
+      nodes.filter(n => n.kind === 'board').length,
+      nodes.filter(n => n.kind === 'load').length,
+      nodes.filter(n => (n.kind || 'junction') === 'junction').length,
+      Object.keys(d.segments || {}).length,
+      (d.cables || []).length,
+    ]);
+  });
+  sheet(dl, 'Tegninger');
+
+  // Categories across the whole project
+  const { cats, catOf } = computeProjectCategories(drawings);
+
+  // Kabler (all drawings)
+  const cl = [['Tegning', 'Kabel-ID', 'Fra', 'Til', 'Funktion', 'LS', 'Spænding [V]', 'Faser', 'Kabeltype', 'Tværsnit', 'Ib [A]', 'In [A]', 'Iz endelig [A]', 'Margin [A]', 'Status', 'Rute', 'ΔU total [%]', 'ΔU grænse [%]', 'ΔU status', 'Ik_min [A]', 'Kortslutn. status']];
+  drawings.forEach(d => {
+    let A; try { A = analyze({ cables: d.cables || [], segments: d.segments || {}, cableTypes: d.cableTypes, trayTypes: d.trayTypes, project: d.project || project }); } catch (e) { A = null; }
+    (d.cables || []).forEach(c => {
+      const ct = d.cableTypes[c.cable_type];
+      const der = A && A.derating[c.id] ? A.derating[c.id] : {};
+      const v = A && A.vd[c.id] ? A.vd[c.id] : {};
+      const s = A && A.sc[c.id] ? A.sc[c.id] : {};
+      cl.push([
+        d.name, c.id, c.from, c.to, c.function, num(der.ls), c.V, c.phases, c.cable_type, num(ct?.cross_section),
+        c.Ib, c.In, num(der.iz_final), num(der.margin), num(der.status), (c.route || []).join(' → '),
+        num(v.du_total), num(v.limit), num(v.status), num(s.ik_min), num(s.status),
+      ]);
+    });
+  });
+  sheet(cl, 'Kabler');
+
+  // Føringsveje (all drawings) with category + drawing
+  const tr = [['Tegning', 'Segment', 'Kategori', 'Fra', 'Til', 'Længde [m]', 'Bakketype', 'Bredde [mm]', 'Højde [mm]', 'Antal kabler', 'Kabler', 'Fyldning [%]', 'Maks [%]', 'Status']];
+  drawings.forEach(d => {
+    let A; try { A = analyze({ cables: d.cables || [], segments: d.segments || {}, cableTypes: d.cableTypes, trayTypes: d.trayTypes, project: d.project || project }); } catch (e) { A = null; }
+    Object.entries(d.segments || {}).forEach(([sid, s]) => {
+      const tt = d.trayTypes[s.tray_type];
+      const f = A && A.trayFill[sid] ? A.trayFill[sid] : {};
+      const occ = A && A.occByLS[sid] ? A.occByLS[sid] : null;
+      const cables_in = occ ? occ.LS1.concat(occ.LS2, occ.LS3) : [];
+      tr.push([
+        d.name, sid, catOf[`${d.name}::${sid}`] ?? '', s.from, s.to, s.length_m, s.tray_type,
+        num(tt?.width_mm), num(tt?.height_mm), num(f.count), cables_in.join(', '), num(f.fill_pct), num(f.max), num(f.status),
+      ]);
+    });
+  });
+  sheet(tr, 'Føringsveje');
+
+  // Kategorier — each category, which drawings it spans, and its segments
+  const cat = [['Kategori', 'Tegninger', 'Bredder [mm]', 'Antal segmenter', 'Segmenter (tegning: segment)']];
+  cats.forEach((c, i) => {
+    const segList = c.segs.map(x => `${x.drawingName}: ${x.segId}`).join(', ');
+    cat.push([i + 1, Array.from(c.drawings).join(', '), Array.from(c.widths).sort((a, b) => a - b).join(', '), c.segs.length, segList]);
+  });
+  if (cats.length === 0) cat.push(['—', 'Ingen føringsvejssegmenter', '', 0, '']);
+  sheet(cat, 'Kategorier');
+
+  // Kabelbakke-katalog (union across drawings)
+  const allTray = {}; drawings.forEach(d => Object.entries(d.trayTypes || {}).forEach(([n, t]) => { allTray[n] = t; }));
+  const tt_sh = [['Bakketype', 'Bredde [mm]', 'Højde [mm]', 'Bruttoareal [mm²]', 'Maks fyldning [%]']];
+  Object.entries(allTray).forEach(([n, t]) => tt_sh.push([n, t.width_mm, t.height_mm, t.gross_area_mm2, t.max_fill_percent]));
+  sheet(tt_sh, 'Kabelbakke-katalog');
+
+  // Kabeltyper (union across drawings)
+  const allCab = {}; drawings.forEach(d => Object.entries(d.cableTypes || {}).forEach(([n, t]) => { allCab[n] = t; }));
+  const ct_sh = [['Kabeltype', 'Ledere', 'Tværsnit', 'Parallel', 'S [mm²]', 'Yderdiameter [mm]', 'Areal [mm²]', 'Iz grund [A]']];
+  Object.entries(allCab).forEach(([n, t]) => ct_sh.push([n, t.conductors, t.cross_section, t.is_parallel, t.S_mm2, t.od_mm, t.area_mm2, t.iz_a]));
+  sheet(ct_sh, 'Kabeltyper');
+
+  XLSX.writeFile(wb, filename || `projekt_${project.site || 'kabelsystem'}.xlsx`);
+}
+
 // =========================
 // SIZING HELPER — find smallest cable that meets all constraints
 // =========================
@@ -1367,6 +1518,32 @@ export default function App() {
     const data = JSON.stringify({ project, cableTypes, trayTypes, transformerTypes, segments, nodes, cables, _meta:{ exported:new Date().toISOString(), app:'CableSystemDesigner', version:'1.2' } }, null, 2);
     downloadBlob(`${project.site}_${project.location}_project.json`, data);
   };
+
+  // Gather ALL drawings and export the whole project to one Danish Excel workbook.
+  const exportProject = async () => {
+    // Make sure the current drawing's latest edits are persisted before reading others.
+    try { await flushCurrent(); } catch (e) {}
+    const drawings = [];
+    for (const p of (projectList || [])) {
+      let b;
+      if (p.id === activeProjectId) {
+        b = { project, nodes, segments, cables, cableTypes, trayTypes };
+      } else {
+        b = (await loadBundle(p.id)) || {};
+      }
+      drawings.push({
+        id: p.id, name: p.name,
+        project: b.project || project,
+        nodes: b.nodes || {},
+        segments: b.segments || {},
+        cables: b.cables || [],
+        cableTypes: { ...DEFAULT_CABLE_TYPES, ...(b.cableTypes || {}) },
+        trayTypes: { ...DEFAULT_TRAY_TYPES, ...(b.trayTypes || {}) },
+      });
+    }
+    try { exportProjectXlsx(drawings, project); }
+    catch (e) { try { exportXlsx({ project, cables, segments, cableTypes, trayTypes }, A); } catch (e2) {} }
+  };
   const handleJSONImport = async (e) => {
     const file = e.target.files?.[0]; if (!file) return;
     try {
@@ -1451,8 +1628,8 @@ export default function App() {
                 {LANGS.map(l => <option key={l.code} value={l.code}>{l.name}</option>)}
               </select>
             </label>
-            <button onClick={() => exportXlsx({project, cables, segments, cableTypes, trayTypes}, A)}
-                    title={t('exportExcel')}
+            <button onClick={() => exportProject()}
+                    title="Download hele projektet som Excel (dansk)"
                     className="px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors hover:brightness-95"
                     style={{ backgroundColor:'#E7E2D4', color:'#44403c' }}>
               <FileDown size={15}/> Excel
@@ -2930,19 +3107,22 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
         }
         setCableMsg(null);
         const route = findRoute(lSegs, cableFrom, id);
-        // When the destination is a load, the cable adopts the load's electrical data
+        // When the destination is a load, the cable adopts the load's electrical data.
+        // When it is a board WITH a specified consumption, adopt that so the feeding
+        // main cable can be dimensioned without modelling individual loads.
         const isLoad = kind === 'load';
+        const boardHasLoad = kind === 'board' && Number(node.Ib) > 0;
         setPendingCable({
           from: cableFrom, to: id, route: route || [], noPath: route === null,
           toKind: kind,
           cable_type: Object.keys(cableTypes)[0],
           cable_function: isLoad ? (node.function || 'Socket circuit') : 'Sub-board feeder',
-          Ib: isLoad ? (node.Ib || 0) : 0,
-          In: isLoad ? (node.In || 0) : 0,
-          V: isLoad ? (node.V || 230) : 400,
-          phases: isLoad ? (node.phases || 1) : 3,
-          cos_phi: isLoad ? (node.cos_phi || 0.9) : 0.9,
-          adoptedFromLoad: isLoad,
+          Ib: isLoad ? (node.Ib || 0) : (boardHasLoad ? Number(node.Ib) : 0),
+          In: isLoad ? (node.In || 0) : (boardHasLoad ? Number(node.In_main || 0) : 0),
+          V: isLoad ? (node.V || 230) : (boardHasLoad ? Number(node.V || 400) : 400),
+          phases: isLoad ? (node.phases || 1) : (boardHasLoad ? Number(node.phases || 3) : 3),
+          cos_phi: isLoad ? (node.cos_phi || 0.9) : (boardHasLoad ? Number(node.cos_phi || 0.9) : 0.9),
+          adoptedFromLoad: isLoad || boardHasLoad,
         });
         setCableFrom(null);
       }
@@ -4416,6 +4596,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
                   <rect x={p.x-bw} y={p.y-bh} width={bw*2} height={bh*2} rx="3" fill={fill} stroke={stroke} strokeWidth="2.5"/>
                   <text x={p.x} y={p.y+1} textAnchor="middle" fontSize="11" fontWeight="bold" fill={stroke} style={{ pointerEvents:'none', userSelect:'none' }}>{id}</text>
                   {p.In_main ? <text x={p.x} y={p.y+bh*0.7} textAnchor="middle" fontSize="7" fill="#666" style={{ pointerEvents:'none' }}>{p.In_main}A</text> : null}
+                  {Number(p.Ib) > 0 ? <text x={p.x} y={p.y-bh-3} textAnchor="middle" fontSize="8" fontWeight="bold" fill="#b45309" style={{ pointerEvents:'none', userSelect:'none' }}>⚡{p.Ib} A</text> : null}
                 </g>
               );
             }
@@ -4964,7 +5145,7 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
     board_type: node.board_type || 'Sub-board',
     In_main: node.In_main || 0,
     function: node.function || 'Socket circuit',
-    V: node.V ?? 230, phases: node.phases ?? 1,
+    V: node.V ?? (node.kind === 'board' ? 400 : 230), phases: node.phases ?? (node.kind === 'board' ? 3 : 1),
     Ib: node.Ib ?? 0, In: node.In ?? 0, cos_phi: node.cos_phi ?? 0.9,
     shape: node.shape || 'dot', size: node.size || 14, rotation: node.rotation || 0,
     tray_type: node.tray_type || '',
@@ -4977,7 +5158,12 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
   const saveAll = () => {
     if (name !== id && lNodes[name]) { setNameErr(`${name} eksisterer allerede`); return; }
     const update = { kind, color: meta.color || undefined, size: Number(meta.size) };
-    if (kind === 'board') { update.board_type = meta.board_type; update.In_main = Number(meta.In_main); }
+    if (kind === 'board') {
+      update.board_type = meta.board_type; update.In_main = Number(meta.In_main);
+      // Consumption on the board (for dimensioning the feeding main cable)
+      update.Ib = Number(meta.Ib) || 0; update.V = Number(meta.V) || 400;
+      update.phases = Number(meta.phases) || 3; update.cos_phi = Number(meta.cos_phi) || 0.9;
+    }
     else if (kind === 'load') {
       update.function = meta.function; update.V = Number(meta.V); update.phases = Number(meta.phases);
       update.Ib = Number(meta.Ib); update.In = Number(meta.In); update.cos_phi = Number(meta.cos_phi);
@@ -5009,6 +5195,17 @@ function NodeEditDialog({ id, setId, lNodes, renameNode, deleteNode, updateNode,
           <div className="border border-stone-200 rounded-lg p-2 mb-2 space-y-1 bg-stone-100/40">
             <Selector label="Tavle-type" value={meta.board_type} onChange={v=>setM('board_type', v)} options={['Main board','Sub-board','UPS','Distribution','PDU']}/>
             <FormField label="Hovedbryder In [A]" type="number" value={meta.In_main} onChange={v=>setM('In_main', v)} hint="0 = ikke angivet"/>
+            <div className="pt-1 mt-1 border-t border-stone-200/70">
+              <p className="text-[11px] text-stone-500 mb-1">Forbrug på tavlen (bruges til at dimensionere hovedkablet — uden at tilføje en last)</p>
+              <div className="grid grid-cols-2 gap-2">
+                <FormField label="Forbrug Ib [A]" type="number" value={meta.Ib} onChange={v=>setM('Ib', v)} hint="0 = intet forbrug"/>
+                <FormField label="cos φ" type="number" step="0.01" value={meta.cos_phi} onChange={v=>setM('cos_phi', v)}/>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <FormField label="V" type="number" value={meta.V} onChange={v=>setM('V', v)}/>
+                <FormField label="Faser" type="number" value={meta.phases} onChange={v=>setM('phases', v)}/>
+              </div>
+            </div>
           </div>
         )}
 
