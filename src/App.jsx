@@ -226,8 +226,21 @@ const DEFAULT_CABLE_TYPES = {
   // ---- Parallelle føringer til store hovedkabler ----
   'PFXP 2x(5G240)':  mkCT(5,'5G240×2',240,95,860,2,'Cu'),
   'PFXP 3x(5G240)':  mkCT(5,'5G240×3',240,116,1290,3,'Cu'),
+  'PFXP 4x(5G240)':  mkCT(5,'5G240×4',240,134,1720,4,'Cu'),
+  'PFXP 5x(5G240)':  mkCT(5,'5G240×5',240,150,2150,5,'Cu'),
+  'PFXP 6x(5G240)':  mkCT(5,'5G240×6',240,164,2580,6,'Cu'),
   'AXKJ 2x(4x240)':  mkCT(4,'4x240×2',240,90,670,2,'Al'),
   'AXKJ 3x(4x240)':  mkCT(4,'4x240×3',240,111,1005,3,'Al'),
+  'AXKJ 4x(4x240)':  mkCT(4,'4x240×4',240,128,1340,4,'Al'),
+  'AXKJ 5x(4x240)':  mkCT(4,'4x240×5',240,143,1675,5,'Al'),
+  'AXKJ 6x(4x240)':  mkCT(4,'4x240×6',240,157,2010,6,'Al'),
+  // ---- Enleder-parallelle til meget høje strømme (hovedforsyning) ----
+  'Cu 4x(1x240)':  mkCT(1,'1x240×4',240,60,2152,4,'Cu'),
+  'Cu 6x(1x240)':  mkCT(1,'1x240×6',240,74,3228,6,'Cu'),
+  'Cu 8x(1x240)':  mkCT(1,'1x240×8',240,85,4304,8,'Cu'),
+  'Al 4x(1x300)':  mkCT(1,'1x300×4',300,66,1928,4,'Al'),
+  'Al 6x(1x300)':  mkCT(1,'1x300×6',300,81,2892,6,'Al'),
+  'Al 8x(1x300)':  mkCT(1,'1x300×8',300,93,3856,8,'Al'),
 };
 // Cable-tray catalogue. Trays come in 100 mm and 150 mm heights, in widths from
 // 100 mm to 900 mm in 50 mm steps. Key is `width x height`.
@@ -711,6 +724,10 @@ function computeProjectCategories(drawings) {
     });
   });
   Object.values(segsByJunction).forEach(list => { for (let i = 1; i < list.length; i++) sunion(list[0], list[i]); });
+  // Manual grouping across drawings: segments sharing a catGroup are merged.
+  const byGroup = {};
+  drawings.forEach(d => Object.entries(d.segments || {}).forEach(([sid, s]) => { if (s.catGroup) (byGroup[s.catGroup] = byGroup[s.catGroup] || []).push(gseg(d.id, sid)); }));
+  Object.values(byGroup).forEach(list => { for (let i = 1; i < list.length; i++) sunion(list[0], list[i]); });
   const groups = {};
   drawings.forEach(d => {
     Object.entries(d.segments || {}).forEach(([sid, s]) => {
@@ -729,6 +746,8 @@ function computeProjectCategories(drawings) {
   cats.forEach(c => {
     const widest = Math.max(0, ...Array.from(c.widths));
     c.color = c.explicitColors.length ? c.explicitColors[c.explicitColors.length - 1] : (widest ? trayWidthColor(widest) : '#78716c');
+    const grp = c.segs.map(x => x.seg && x.seg.catGroup).find(Boolean);
+    c.manualGroup = grp || null;
   });
   // map global segment id -> category number
   const catOf = {};
@@ -863,6 +882,18 @@ function findCableCandidates({ Ib, V, phases, cos_phi, fn, length_m, n_bundle, l
     if (out.length >= 3) break;
   }
   return { candidates: out, In, kG, kT, kTot:round(kTot,3), limit };
+}
+
+// Auto-select the smallest catalogue cable whose derated Iz still covers the design
+// current (Iz_derated ≥ In ≥ Ib), taking temperature, grouping and route length into
+// account. Returns { cable_type, In, iz_final } or a null cable_type if nothing fits.
+function autoDimensionCable({ Ib, V, phases, cos_phi, fn, length_m, n_bundle, project, cableTypes }) {
+  if (!(Number(Ib) > 0)) return null;
+  const res = findCableCandidates({ Ib: Number(Ib), V: Number(V) || 400, phases: Number(phases) || 3, cos_phi: Number(cos_phi) || 0.9, fn, length_m: Number(length_m) || 1, n_bundle: Number(n_bundle) || 1, ls: 'LS2', project, cableTypes });
+  if (res && res.candidates && res.candidates.length) {
+    return { cable_type: res.candidates[0].name, In: res.In, iz_final: res.candidates[0].iz_final };
+  }
+  return { cable_type: null, In: res ? res.In : null, iz_final: null };
 }
 
 // =========================
@@ -1168,6 +1199,11 @@ export default function App() {
   const [dragOverTabG, setDragOverTabG] = useState(null);
   const [renamingTabG, setRenamingTabG] = useState(null);
   const tabBarRef = useRef(null);                 // global tab bar element (for drag-out detection)
+  // Requests from the global tab bar while the editor is open (handled inside the editor
+  // so the current drawing's live edits are saved before switching / creating / exiting).
+  const [reqDrawingTab, setReqDrawingTab] = useState(null);
+  const [reqNewTab, setReqNewTab] = useState(false);
+  const [reqExit, setReqExit] = useState(false);
   const [autoSave, setAutoSave] = useState(() => {
     try { return globalThis?.localStorage?.getItem?.('cable_app_autosave') !== 'off'; } catch (e) { return true; }
   });
@@ -1561,14 +1597,14 @@ export default function App() {
       return ns || {};
     } catch (e) { return {}; }
   };
-  // Load a drawing's nodes + segments + tray catalogue (for project-wide categories).
+  // Load a drawing's nodes + segments + cables + catalogues (for project-wide views).
   const loadDrawingData = async (projectId) => {
     try {
       const raw = await appStorage.get(projKey(projectId));
-      if (!raw) return { nodes: {}, segments: {}, trayTypes: DEFAULT_TRAY_TYPES };
+      if (!raw) return { nodes: {}, segments: {}, cables: [], trayTypes: DEFAULT_TRAY_TYPES, cableTypes: DEFAULT_CABLE_TYPES, project };
       const b = JSON.parse(raw);
-      return { nodes: b.nodes || {}, segments: b.segments || {}, trayTypes: { ...DEFAULT_TRAY_TYPES, ...(b.trayTypes || {}) } };
-    } catch (e) { return { nodes: {}, segments: {}, trayTypes: DEFAULT_TRAY_TYPES }; }
+      return { nodes: b.nodes || {}, segments: b.segments || {}, cables: b.cables || [], trayTypes: { ...DEFAULT_TRAY_TYPES, ...(b.trayTypes || {}) }, cableTypes: { ...DEFAULT_CABLE_TYPES, ...(b.cableTypes || {}) }, project: b.project || project };
+    } catch (e) { return { nodes: {}, segments: {}, cables: [], trayTypes: DEFAULT_TRAY_TYPES, cableTypes: DEFAULT_CABLE_TYPES, project }; }
   };
   // Apply a patch to one node inside another drawing's stored bundle (used to
   // write the reciprocal end of a link). Active drawing is patched in-editor.
@@ -1583,6 +1619,22 @@ export default function App() {
         b.nodes[nodeId] = auto[nodeId] || { x: 100, y: 100 };
       }
       b.nodes[nodeId] = { ...b.nodes[nodeId], ...patch };
+      await appStorage.set(projKey(projectId), JSON.stringify(b));
+    } catch (e) {}
+  };
+  // Apply a patch to several segments inside another drawing's stored bundle (used for
+  // manual category grouping across drawings). undefined values in the patch delete the key.
+  const patchDrawingSegments = async (projectId, segIds, patch) => {
+    try {
+      const raw = await appStorage.get(projKey(projectId));
+      const b = raw ? JSON.parse(raw) : null;
+      if (!b || !b.segments) return;
+      (segIds || []).forEach(sid => {
+        if (!b.segments[sid]) return;
+        const s = { ...b.segments[sid], ...patch };
+        Object.keys(patch).forEach(k => { if (patch[k] === undefined) delete s[k]; });
+        b.segments[sid] = s;
+      });
       await appStorage.set(projKey(projectId), JSON.stringify(b));
     } catch (e) {}
   };
@@ -1684,6 +1736,64 @@ export default function App() {
   const critical = A.opt.filter(o => o.severity === 'CRITICAL').length;
   const tight = A.opt.filter(o => o.severity === 'TIGHT').length;
 
+  // Reusable global drawing tab bar. Editor-aware: while a drawing is open, tab clicks,
+  // "Ny" and "Forside" are routed through the editor (via req* state) so the current
+  // drawing's live edits are saved before switching/creating/exiting.
+  const drawingTabBar = openTabs.length > 0 ? (
+    <div className="flex items-stretch border-b border-stone-200 select-none" style={{ backgroundColor:'#E9E5D9' }}>
+      <div ref={tabBarRef} className="flex items-stretch overflow-x-auto flex-1 min-w-0" style={{ scrollbarWidth:'thin' }}>
+      {openTabs.filter(id => (projectList||[]).find(p => p.id === id)).map(id => {
+        const nameOf = (projectList||[]).find(p => p.id === id)?.name || 'Tegning';
+        const isRen = renamingTabG && renamingTabG.id === id;
+        return (
+          <div key={id}
+               draggable={!isRen}
+               onClick={()=>{ if (isRen) return; if (drawingOpen) setReqDrawingTab(id); else openDrawingTab(id); }}
+               onContextMenu={(e)=>{ e.preventDefault(); setRenamingTabG({ id, value: nameOf }); }}
+               onDragStart={(e)=>{ dragTabRefG.current = id; e.dataTransfer.effectAllowed='move'; try { e.dataTransfer.setData('text/plain', id); } catch(err){} }}
+               onDragOver={(e)=>{ if (dragTabRefG.current && dragTabRefG.current !== id) { e.preventDefault(); e.dataTransfer.dropEffect='move'; if (dragOverTabG !== id) setDragOverTabG(id); } }}
+               onDragLeave={()=>{ if (dragOverTabG === id) setDragOverTabG(null); }}
+               onDrop={(e)=>{ e.preventDefault(); const from = dragTabRefG.current; if (from && from !== id) reorderTabs(from, id); dragTabRefG.current=null; setDragOverTabG(null); }}
+               onDragEnd={(e)=>{ const from = dragTabRefG.current; const bar = tabBarRef.current;
+                  if (from && bar) { const r = bar.getBoundingClientRect(); if (e.clientY > r.bottom + 45 || e.clientY < r.top - 45 || e.clientX < r.left - 70 || e.clientX > r.right + 70) popOutDrawing(from); }
+                  dragTabRefG.current=null; setDragOverTabG(null); }}
+               className={`group px-3 py-1.5 text-xs whitespace-nowrap border-r border-stone-300/50 flex items-center gap-1.5 rounded-t-lg shrink-0 ${isRen ? 'cursor-text' : 'cursor-grab active:cursor-grabbing'} ${dragOverTabG===id ? 'ring-2 ring-stone-400' : ''} ${id===activeProjectId ? 'font-semibold' : 'text-stone-600 hover:bg-white/40'}`}
+               style={id===activeProjectId ? { backgroundColor:'#D7D0BC', color:'#44403c' } : undefined}
+               title={`${nameOf}  ·  Klik: åbn · højreklik: omdøb · træk: flyt · træk ud eller ⧉: nyt vindue`}>
+            <Layers size={12} className="shrink-0"/>
+            {isRen ? (
+              <input autoFocus value={renamingTabG.value}
+                     onChange={(e)=>setRenamingTabG({ id, value: e.target.value })}
+                     onClick={(e)=>e.stopPropagation()}
+                     onBlur={()=>{ const nm=(renamingTabG.value||'').trim(); if(nm) renameProject(id, nm); setRenamingTabG(null); }}
+                     onKeyDown={(e)=>{ if(e.key==='Enter'){ const nm=(renamingTabG.value||'').trim(); if(nm) renameProject(id, nm); setRenamingTabG(null); } else if(e.key==='Escape'){ setRenamingTabG(null); } }}
+                     className="bg-white/90 border border-stone-300 rounded px-1 text-xs outline-none focus:ring-1 focus:ring-stone-400" style={{ width:`${Math.max(6,(renamingTabG.value||'').length+1)}ch`, color:'#44403c' }}/>
+            ) : (
+              <span className="truncate max-w-[160px]">{nameOf}</span>
+            )}
+            {!isRen && (
+              <button onClick={(e)=>{ e.stopPropagation(); popOutDrawing(id); }} title="Åbn i nyt vindue"
+                      className="ml-1 rounded-md p-0.5 hover:bg-stone-300/70 text-stone-500 shrink-0"><ExternalLink size={11}/></button>
+            )}
+            {openTabs.length > 1 && !isRen && (
+              <button onClick={(e)=>{ e.stopPropagation(); closeTab(id); }} title="Luk fane (sletter ikke tegningen)"
+                      className="rounded-md p-0.5 hover:bg-stone-300/70 text-stone-500 shrink-0"><X size={12}/></button>
+            )}
+          </div>
+        );
+      })}
+      </div>
+      {/* Pinned actions — always visible, never scrolled off by long tab names */}
+      <button onClick={()=>{ if (drawingOpen) setReqNewTab(true); else setNewProjectOpen(true); }} title="Ny tegning"
+              className="px-3 py-1.5 text-xs text-stone-600 hover:bg-white/50 flex items-center gap-1 shrink-0 border-l border-stone-300/60"><Plus size={13}/> Ny</button>
+      {drawingOpen && (
+        <button onClick={()=>setReqExit(true)} title="Tilbage til forsiden"
+                className="my-0.5 ml-1 mr-1 px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 shrink-0 transition-colors hover:brightness-95"
+                style={{ backgroundColor:'#D7D0BC', color:'#44403c' }}><Home size={13}/> Forside</button>
+      )}
+    </div>
+  ) : null;
+
   return (
     <div dir={isRTL ? 'rtl' : 'ltr'} className="min-h-screen bg-stone-50" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}>
       {/* Sticky top chrome — section tabs + header, ivory engineering style (mirrors the trays editor) */}
@@ -1738,58 +1848,13 @@ export default function App() {
             </button>
           </div>
         </header>
-        {/* Global drawing tab bar — always accessible (shown whenever the editor is closed). */}
-        {openTabs.length > 0 && !drawingOpen && (
-          <div ref={tabBarRef} className="flex items-stretch overflow-x-auto border-b border-stone-200 select-none" style={{ backgroundColor:'#E9E5D9', scrollbarWidth:'thin' }}>
-            {openTabs.filter(id => (projectList||[]).find(p => p.id === id)).map(id => {
-              const nameOf = (projectList||[]).find(p => p.id === id)?.name || 'Tegning';
-              const isRen = renamingTabG && renamingTabG.id === id;
-              return (
-                <div key={id}
-                     draggable={!isRen}
-                     onClick={()=>{ if (!isRen) openDrawingTab(id); }}
-                     onContextMenu={(e)=>{ e.preventDefault(); setRenamingTabG({ id, value: nameOf }); }}
-                     onDragStart={(e)=>{ dragTabRefG.current = id; e.dataTransfer.effectAllowed='move'; try { e.dataTransfer.setData('text/plain', id); } catch(err){} }}
-                     onDragOver={(e)=>{ if (dragTabRefG.current && dragTabRefG.current !== id) { e.preventDefault(); e.dataTransfer.dropEffect='move'; if (dragOverTabG !== id) setDragOverTabG(id); } }}
-                     onDragLeave={()=>{ if (dragOverTabG === id) setDragOverTabG(null); }}
-                     onDrop={(e)=>{ e.preventDefault(); const from = dragTabRefG.current; if (from && from !== id) reorderTabs(from, id); dragTabRefG.current=null; setDragOverTabG(null); }}
-                     onDragEnd={(e)=>{ const from = dragTabRefG.current; const bar = tabBarRef.current;
-                        if (from && bar) { const r = bar.getBoundingClientRect(); if (e.clientY > r.bottom + 45 || e.clientY < r.top - 45 || e.clientX < r.left - 70 || e.clientX > r.right + 70) popOutDrawing(from); }
-                        dragTabRefG.current=null; setDragOverTabG(null); }}
-                     className={`group px-3 py-1.5 text-xs whitespace-nowrap border-r border-stone-300/50 flex items-center gap-1.5 rounded-t-lg ${isRen ? 'cursor-text' : 'cursor-grab active:cursor-grabbing'} ${dragOverTabG===id ? 'ring-2 ring-stone-400' : ''} ${id===activeProjectId ? 'font-semibold' : 'text-stone-600 hover:bg-white/40'}`}
-                     style={id===activeProjectId ? { backgroundColor:'#D7D0BC', color:'#44403c' } : undefined}
-                     title="Klik: åbn · højreklik: omdøb · træk: flyt rækkefølge · træk ud eller ⧉: nyt vindue">
-                  <Layers size={12}/>
-                  {isRen ? (
-                    <input autoFocus value={renamingTabG.value}
-                           onChange={(e)=>setRenamingTabG({ id, value: e.target.value })}
-                           onClick={(e)=>e.stopPropagation()}
-                           onBlur={()=>{ const nm=(renamingTabG.value||'').trim(); if(nm) renameProject(id, nm); setRenamingTabG(null); }}
-                           onKeyDown={(e)=>{ if(e.key==='Enter'){ const nm=(renamingTabG.value||'').trim(); if(nm) renameProject(id, nm); setRenamingTabG(null); } else if(e.key==='Escape'){ setRenamingTabG(null); } }}
-                           className="bg-white/90 border border-stone-300 rounded px-1 text-xs outline-none focus:ring-1 focus:ring-stone-400" style={{ width:`${Math.max(6,(renamingTabG.value||'').length+1)}ch`, color:'#44403c' }}/>
-                  ) : (
-                    <span>{nameOf}</span>
-                  )}
-                  {!isRen && (
-                    <button onClick={(e)=>{ e.stopPropagation(); popOutDrawing(id); }} title="Åbn i nyt vindue"
-                            className="ml-1 rounded-md p-0.5 hover:bg-stone-300/70 text-stone-500"><ExternalLink size={11}/></button>
-                  )}
-                  {openTabs.length > 1 && !isRen && (
-                    <button onClick={(e)=>{ e.stopPropagation(); closeTab(id); }} title="Luk fane (sletter ikke tegningen)"
-                            className="rounded-md p-0.5 hover:bg-stone-300/70 text-stone-500"><X size={12}/></button>
-                  )}
-                </div>
-              );
-            })}
-            <button onClick={()=>setNewProjectOpen(true)} title="Ny tegning"
-                    className="px-3 py-1.5 text-xs text-stone-600 hover:bg-white/50 flex items-center gap-1 shrink-0"><Plus size={13}/> Ny</button>
-          </div>
-        )}
+        {/* Global drawing tab bar — in the chrome when the editor is closed. */}
+        {!drawingOpen && drawingTabBar}
       </div>
 
       <main className="p-3 lg:p-6 lg:max-w-6xl lg:mx-auto space-y-3">
         {tab === 'project' && <ProjectTab project={project} setProject={setProject} counts={counts} critical={critical} tight={tight} loadTemplate={loadTemplate} clearAll={clearAll} transformerTypes={transformerTypes} exportProjectJSON={exportProjectJSON} fileInputRef={fileInputRef} projectList={projectList} activeProjectId={activeProjectId} switchProject={switchProject} deleteProject={deleteProject} renameProject={renameProject} openNewProject={()=>setNewProjectOpen(true)} setTab={setTab} setDrawingOpen={setDrawingOpen} t={t} />}
-        {tab === 'cables' && <CablesTab cables={cables} setCables={setCables} cableTypes={cableTypes} segments={segments} A={A} setEditing={setEditing} setSizingOpen={setSizingOpen} exportCablesCSV={exportCablesCSV} csvInputRef={csvInputRef} />}
+        {tab === 'cables' && <CablesTab cables={cables} setCables={setCables} cableTypes={cableTypes} segments={segments} A={A} setEditing={setEditing} setSizingOpen={setSizingOpen} exportCablesCSV={exportCablesCSV} csvInputRef={csvInputRef} projectList={projectList} activeProjectId={activeProjectId} loadDrawingData={loadDrawingData} switchProject={switchProject} project={project} />}
         {tab === 'trays' && <TraysTab segments={segments} setSegments={setSegments} trayTypes={trayTypes} A={A} setEditing={setEditing} setDrawingOpen={setDrawingOpen} />}
         {tab === 'diagram' && <DiagramTab cables={cables} A={A} project={project} />}
         {tab === 'catalog' && <CatalogTab cableTypes={cableTypes} setCableTypes={setCableTypes} trayTypes={trayTypes} setTrayTypes={setTrayTypes} transformerTypes={transformerTypes} setTransformerTypes={setTransformerTypes} setEditing={setEditing} />}
@@ -1802,8 +1867,11 @@ export default function App() {
 
       {editing && <EditModal editing={editing} setEditing={setEditing} cableTypes={cableTypes} trayTypes={trayTypes} transformerTypes={transformerTypes} segments={segments} setCables={setCables} setSegments={setSegments} setCableTypes={setCableTypes} setTrayTypes={setTrayTypes} setTransformerTypes={setTransformerTypes} cables={cables} />}
       {sizingOpen && <SizingModal close={() => setSizingOpen(false)} project={project} cableTypes={cableTypes} segments={segments} cables={cables} setCables={setCables} />}
+      {drawingOpen && openTabs.length > 0 && (
+        <div className="fixed top-0 inset-x-0 z-40 shadow-md">{drawingTabBar}</div>
+      )}
       {drawingOpen && <DrawingModal key={activeProjectId} close={() => setDrawingOpen(false)} goHome={() => { setDrawingOpen(false); setTab('project'); }} segments={segments} setSegments={setSegments} nodes={nodes} setNodes={setNodes} trayTypes={trayTypes} cables={cables} setCables={setCables} cableTypes={cableTypes} bgImage={bgImage} setBgImage={setBgImage} project={project}
-        projectList={projectList} openTabs={openTabs} activeProjectId={activeProjectId} commitDraftAndSwitch={commitDraftAndSwitch} commitDraftAndCreate={commitDraftAndCreate} closeTab={closeTab} reorderTabs={reorderTabs} renameProject={renameProject} popOutDrawing={popOutDrawing} loadDrawingNodes={loadDrawingNodes} loadDrawingData={loadDrawingData} patchDrawingNode={patchDrawingNode} collectUsedIds={collectUsedIds} saveAllDrawings={saveAllDrawings} autoSave={autoSave} toggleAutoSave={toggleAutoSave} />}
+        projectList={projectList} openTabs={openTabs} activeProjectId={activeProjectId} commitDraftAndSwitch={commitDraftAndSwitch} commitDraftAndCreate={commitDraftAndCreate} closeTab={closeTab} reorderTabs={reorderTabs} renameProject={renameProject} popOutDrawing={popOutDrawing} loadDrawingNodes={loadDrawingNodes} loadDrawingData={loadDrawingData} patchDrawingNode={patchDrawingNode} patchDrawingSegments={patchDrawingSegments} collectUsedIds={collectUsedIds} saveAllDrawings={saveAllDrawings} autoSave={autoSave} toggleAutoSave={toggleAutoSave} reqDrawingTab={reqDrawingTab} setReqDrawingTab={setReqDrawingTab} reqNewTab={reqNewTab} setReqNewTab={setReqNewTab} reqExit={reqExit} setReqExit={setReqExit} />}
       {newProjectOpen && <NewProjectModal close={() => setNewProjectOpen(false)} createProject={createProject} />}
     </div>
   );
@@ -2120,15 +2188,43 @@ function FormField({ label, value, onChange, type='text', step, hint }) {
 // =========================
 // TAB: CABLES
 // =========================
-function CablesTab({ cables, setCables, cableTypes, segments, A, setEditing, setSizingOpen, exportCablesCSV, csvInputRef }) {
+function CablesTab({ cables, setCables, cableTypes, segments, A, setEditing, setSizingOpen, exportCablesCSV, csvInputRef, projectList, activeProjectId, loadDrawingData, switchProject, project }) {
   const [filter, setFilter] = useState('');
   const [lsFilter, setLsFilter] = useState('all');
+  const [allMode, setAllMode] = useState(false);        // show cables across all drawings
+  const [allRows, setAllRows] = useState(null);         // [{ drawingId, drawingName, c, d, v, ct }]
+  const [allLoading, setAllLoading] = useState(false);
+  // Load every drawing's cables (with analysis) when the cross-drawing view is on.
+  useEffect(() => {
+    if (!allMode) return;
+    let alive = true;
+    setAllLoading(true);
+    (async () => {
+      const rows = [];
+      for (const p of (projectList || [])) {
+        let data;
+        if (p.id === activeProjectId) data = { cables, segments, cableTypes, project };
+        else { const d = await loadDrawingData(p.id); data = { cables: d.cables, segments: d.segments, cableTypes: d.cableTypes, project: d.project }; }
+        let AA; try { AA = analyze(data); } catch (e) { AA = null; }
+        (data.cables || []).forEach(c => rows.push({ drawingId: p.id, drawingName: p.name, c, d: AA ? AA.derating[c.id] : null, v: AA ? AA.vd[c.id] : null, ct: data.cableTypes[c.cable_type] }));
+      }
+      if (!alive) return;
+      setAllRows(rows);
+      setAllLoading(false);
+    })();
+    return () => { alive = false; };
+  }, [allMode, cables, segments, cableTypes]);
   const filtered = useMemo(() => cables.filter(c => {
     if (lsFilter !== 'all' && A.lsOf[c.id] !== lsFilter) return false;
     if (!filter) return true;
     const f = filter.toLowerCase();
     return c.id.toLowerCase().includes(f) || c.from.toLowerCase().includes(f) || c.to.toLowerCase().includes(f) || c.function.toLowerCase().includes(f);
   }), [cables, filter, lsFilter, A.lsOf]);
+  const filteredAll = useMemo(() => (allRows || []).filter(r => {
+    if (!filter) return true;
+    const f = filter.toLowerCase();
+    return r.c.id.toLowerCase().includes(f) || (r.c.from||'').toLowerCase().includes(f) || (r.c.to||'').toLowerCase().includes(f) || (r.c.function||'').toLowerCase().includes(f) || (r.drawingName||'').toLowerCase().includes(f);
+  }), [allRows, filter]);
 
   const delCable = (id) => { if (safeConfirm(`Slet ${id}?`)) setCables(cables.filter(c => c.id !== id)); };
 
@@ -2139,8 +2235,11 @@ function CablesTab({ cables, setCables, cableTypes, segments, A, setEditing, set
           <input value={filter} onChange={e=>setFilter(e.target.value)} placeholder="Søg cable ID, from, to..." className="flex-1 px-3 py-2 border rounded-lg text-sm" />
           <button onClick={() => setEditing({ kind:'cable', item: { id:`W${String(cables.length+1).padStart(3,'0')}`, from:'', to:'', function:'Socket circuit', V:230, phases:1, cable_type:Object.keys(cableTypes)[0], Ib:0, In:0, cos_phi:0.9, route:[] }, isNew:true })} className="bg-stone-800 text-white px-3 py-2 rounded-lg active:scale-95"><Plus size={18}/></button>
         </div>
-        <div className="flex gap-1 text-xs items-center">
-          {['all','LS1','LS2','LS3'].map(l => (
+        <div className="flex gap-1 text-xs items-center flex-wrap">
+          <button onClick={()=>setAllMode(m=>!m)} className={`px-2 py-1 rounded font-semibold flex items-center gap-1 ${allMode?'bg-blue-600 text-white':'bg-blue-100 text-blue-800'}`}>
+            <Layers size={12}/> {allMode ? 'Alle tegninger' : 'Denne tegning'}
+          </button>
+          {!allMode && ['all','LS1','LS2','LS3'].map(l => (
             <button key={l} onClick={()=>setLsFilter(l)} className={`px-2 py-1 rounded ${lsFilter===l?'bg-stone-800 text-white':'bg-stone-100 text-stone-700'}`}>{l}</button>
           ))}
           <div className="ml-auto flex gap-1">
@@ -2149,8 +2248,50 @@ function CablesTab({ cables, setCables, cableTypes, segments, A, setEditing, set
             <button onClick={() => csvInputRef.current?.click()} className="px-2 py-1 rounded bg-stone-100 text-stone-700 flex items-center gap-1 active:scale-95"><Upload size={12}/></button>
           </div>
         </div>
-        <div className="text-xs text-stone-500 mt-1">{filtered.length} af {cables.length}</div>
+        <div className="text-xs text-stone-500 mt-1">{allMode ? `${filteredAll.length} kabler på tværs af ${(projectList||[]).length} tegninger` : `${filtered.length} af ${cables.length}`}</div>
       </div>
+
+      {allMode ? (
+        <>
+          {allLoading && !allRows ? (
+            <div className="bg-white p-6 rounded-xl shadow-sm text-center text-stone-400">Indlæser kabler fra alle tegninger …</div>
+          ) : filteredAll.length === 0 ? (
+            <div className="bg-white p-6 rounded-xl shadow-sm text-center text-stone-500">Ingen kabler i projektet.</div>
+          ) : (
+            <div className="space-y-2 md:space-y-0 md:grid md:grid-cols-2 xl:grid-cols-3 md:gap-3">
+              {filteredAll.map((r, i) => {
+                const c = r.c, d = r.d, v = r.v;
+                const isCur = r.drawingId === activeProjectId;
+                return (
+                  <div key={r.drawingId + '::' + c.id + i} className="bg-white p-3 rounded-xl shadow-sm">
+                    <div className="flex items-start justify-between mb-1">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                          <span className="font-bold text-stone-800">{c.id}</span>
+                          <LSBadge ls={d?.ls} />
+                          <StatusBadge status={d?.status} />
+                          <button onClick={()=>{ if (!isCur) switchProject(r.drawingId); }} disabled={isCur}
+                                  className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${isCur ? 'bg-stone-800 text-white' : 'bg-blue-100 text-blue-800 hover:bg-blue-200'}`}>
+                            {r.drawingName}{isCur ? '' : ' →'}
+                          </button>
+                        </div>
+                        <div className="text-sm text-stone-700 truncate">{c.from} → {c.toExt ? `${c.toExt.name} / ${c.toExt.nid}` : c.to}{c.toExt ? ' ⭢' : ''}</div>
+                        <div className="text-xs text-stone-500 truncate">{c.function} · {c.cable_type} · {c.V}V {c.phases}P</div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1 mt-2 text-xs">
+                      <Mini label="Ib" v={`${c.Ib}A`}/>
+                      <Mini label="In" v={`${c.In}A`}/>
+                      <Mini label="Iz·k" v={`${d?.iz_final ?? '—'}A`} ok={d?.status==='OK'}/>
+                      <Mini label="ΔU" v={`${v?.du_total ?? '—'}%`} ok={v?.status==='OK'}/>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      ) : (<>
 
       {filtered.length === 0 && (
         <div className="bg-white p-6 rounded-xl shadow-sm text-center text-stone-500">
@@ -2191,6 +2332,7 @@ function CablesTab({ cables, setCables, cableTypes, segments, A, setEditing, set
         );
       })}
       </div>
+      </>)}
     </div>
   );
 }
@@ -2721,7 +2863,7 @@ function AnalysisTab({ cables, A, cableTypes, segments }) {
 // =========================
 // DRAWING MODAL — interactive cable tray layout editor
 // =========================
-function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project, projectList, openTabs, activeProjectId, commitDraftAndSwitch, commitDraftAndCreate, closeTab, reorderTabs, renameProject, popOutDrawing, loadDrawingNodes, loadDrawingData, patchDrawingNode, collectUsedIds, saveAllDrawings, autoSave, toggleAutoSave }) {
+function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project, projectList, openTabs, activeProjectId, commitDraftAndSwitch, commitDraftAndCreate, closeTab, reorderTabs, renameProject, popOutDrawing, loadDrawingNodes, loadDrawingData, patchDrawingNode, patchDrawingSegments, collectUsedIds, saveAllDrawings, autoSave, toggleAutoSave, reqDrawingTab, setReqDrawingTab, reqNewTab, setReqNewTab, reqExit, setReqExit }) {
   // local working state
   // Node shape: { x, y, kind: 'junction'|'board'|'load', ...meta }
   //   board meta: { board_type, In_main }
@@ -3124,6 +3266,11 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
       });
     });
     Object.values(segsByJunction).forEach(list => { for (let i = 1; i < list.length; i++) union(list[0], list[i]); });
+    // Manual grouping: segments tagged with the same catGroup are forced together,
+    // even when not physically connected (e.g. parallel runs the user chose to combine).
+    const byGroup = {};
+    Object.entries(lSegs).forEach(([id, s]) => { if (s.catGroup) (byGroup[s.catGroup] = byGroup[s.catGroup] || []).push(id); });
+    Object.values(byGroup).forEach(list => { for (let i = 1; i < list.length; i++) union(list[0], list[i]); });
     // group segments by their root segment
     const groups = {};
     Object.entries(lSegs).forEach(([id, s]) => {
@@ -3186,6 +3333,43 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
     })();
     return () => { alive = false; };
   }, [catPanel, lSegs, lNodes, trayTypes]);
+
+  // Manual category selection + merge/unmerge (works across drawings).
+  const [catSel, setCatSel] = useState(() => new Set());   // set of manual keys of categories picked to merge
+  const toggleCatSel = (key) => setCatSel(prev => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+  // Apply a catGroup patch to segments in this drawing (live) and other drawings (stored).
+  const applyCatGroup = async (cats, groupId) => {
+    const perDrawing = {};
+    cats.forEach(cat => cat.segs.forEach(x => { (perDrawing[x.drawingId] = perDrawing[x.drawingId] || []).push(x.segId); }));
+    const curIds = perDrawing[activeProjectId] || [];
+    if (curIds.length) {
+      setLSegs(prev => {
+        const n = { ...prev };
+        curIds.forEach(sid => { if (n[sid]) { const s = { ...n[sid] }; if (groupId === undefined) delete s.catGroup; else s.catGroup = groupId; n[sid] = s; } });
+        try { saveAllDrawings && saveAllDrawings({ ...draftSnapshot(), segments: n }); } catch (e) {}
+        return n;
+      });
+    }
+    for (const [did, segIds] of Object.entries(perDrawing)) {
+      if (did !== activeProjectId && patchDrawingSegments) { try { await patchDrawingSegments(did, segIds, { catGroup: groupId }); } catch (e) {} }
+    }
+  };
+  const mergeSelectedCats = async () => {
+    if (!projectCats) return;
+    const chosen = projectCats.filter((c, i) => catSel.has(c.manualGroup || `idx:${i}`));
+    if (chosen.length < 2) return;
+    // reuse an existing group id among the chosen (so merging a merged group extends it)
+    const groupId = chosen.map(c => c.manualGroup).find(Boolean) || ('G' + Date.now().toString(36));
+    await applyCatGroup(chosen, groupId);
+    setCatSel(new Set());
+    // nudge a recompute
+    setLSegs(prev => ({ ...prev }));
+  };
+  const unmergeCat = async (cat) => {
+    if (!cat || !cat.manualGroup) return;
+    await applyCatGroup([cat], undefined);
+    setLSegs(prev => ({ ...prev }));
+  };
 
   // LS tracks present on each segment, derived from the cables routed through it.
   // LS1 = main feeders/ties/UPS; LS2 = loaded (Ib/Iz > threshold); LS3 = lightly loaded.
@@ -3393,16 +3577,30 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
         // main cable can be dimensioned without modelling individual loads.
         const isLoad = kind === 'load';
         const boardHasLoad = kind === 'board' && Number(node.Ib) > 0;
+        const adoptedIb = isLoad ? Number(node.Ib || 0) : (boardHasLoad ? Number(node.Ib) : 0);
+        const adoptedV = isLoad ? (node.V || 230) : (boardHasLoad ? Number(node.V || 400) : 400);
+        const adoptedPh = isLoad ? (node.phases || 1) : (boardHasLoad ? Number(node.phases || 3) : 3);
+        const adoptedCos = isLoad ? (node.cos_phi || 0.9) : (boardHasLoad ? Number(node.cos_phi || 0.9) : 0.9);
+        const adoptedFn = isLoad ? (node.function || 'Socket circuit') : 'Sub-board feeder';
+        // Auto-dimension the cable for the adopted current (temperature, grouping, length).
+        let autoType = null, autoIn = null;
+        if (adoptedIb > 0) {
+          const L = (route || []).reduce((a, s) => a + segLen(lSegs[s]), 0) || 1;
+          let nb = 1; (route || []).forEach(sid => { const n = lCables.filter(c => (c.route || []).includes(sid)).length + 1; if (n > nb) nb = n; });
+          const dim = autoDimensionCable({ Ib: adoptedIb, V: adoptedV, phases: adoptedPh, cos_phi: adoptedCos, fn: adoptedFn, length_m: L, n_bundle: nb, project, cableTypes });
+          if (dim) { autoType = dim.cable_type; autoIn = dim.In; }
+        }
         setPendingCable({
           from: cableFrom, to: id, route: route || [], noPath: route === null,
           toKind: kind, catId,
-          cable_type: Object.keys(cableTypes)[0],
-          cable_function: isLoad ? (node.function || 'Socket circuit') : 'Sub-board feeder',
-          Ib: isLoad ? (node.Ib || 0) : (boardHasLoad ? Number(node.Ib) : 0),
-          In: isLoad ? (node.In || 0) : (boardHasLoad ? Number(node.In_main || 0) : 0),
-          V: isLoad ? (node.V || 230) : (boardHasLoad ? Number(node.V || 400) : 400),
-          phases: isLoad ? (node.phases || 1) : (boardHasLoad ? Number(node.phases || 3) : 3),
-          cos_phi: isLoad ? (node.cos_phi || 0.9) : (boardHasLoad ? Number(node.cos_phi || 0.9) : 0.9),
+          cable_type: autoType || Object.keys(cableTypes)[0],
+          autoDimNote: adoptedIb > 0 ? (autoType ? `Auto-dimensioneret til ${adoptedIb} A` : `Ingen enkelt kabeltype dækker ${adoptedIb} A — vælg flere parallelle eller større tværsnit`) : null,
+          cable_function: adoptedFn,
+          Ib: adoptedIb,
+          In: (autoIn != null ? autoIn : (isLoad ? (node.In || 0) : (boardHasLoad ? Number(node.In_main || 0) : 0))),
+          V: adoptedV,
+          phases: adoptedPh,
+          cos_phi: adoptedCos,
           adoptedFromLoad: isLoad || boardHasLoad,
         });
         setCableFrom(null);
@@ -3484,6 +3682,23 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
     dragInfoRef.current = { kind: 'waypoint', segId, wi, offsetX: p.x - wp.x, offsetY: p.y - wp.y, startX: p.x, startY: p.y, pointerId: e.pointerId };
     movedRef.current = false;
     setDragging(`${segId}:wp${wi}`);
+  };
+
+  // Drag a cable's connection point (terminal) at a board.
+  const startCablePtDrag = (e, cableId, end) => {
+    if (mode === 'connect' || mode === 'cable') { e.stopPropagation(); return; }
+    e.stopPropagation();
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointersRef.current.size >= 2) return;
+    const svg = svgRef.current;
+    try { svg?.setPointerCapture?.(e.pointerId); } catch (err) {}
+    const p = getPoint(e);
+    const cab = lCables.find(c => c.id === cableId);
+    const pt = cab && cab[end];
+    if (!pt) return;
+    dragInfoRef.current = { kind: 'cablePt', cableId, end, offsetX: p.x - pt.x, offsetY: p.y - pt.y, startClientX: e.clientX, startClientY: e.clientY, pointerId: e.pointerId };
+    movedRef.current = false;
+    setDragging(`${cableId}:${end}`);
   };
 
   // Drag the rotation handle on a T-piece / corner to rotate freely 0–360°
@@ -3583,6 +3798,13 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
         movedRef.current = true;
         return;
       }
+      if (di.kind === 'cablePt') {
+        const nx = Math.round(p.x - di.offsetX);
+        const ny = Math.round(p.y - di.offsetY);
+        setLCables(prev => prev.map(c => c.id === di.cableId && c[di.end] ? { ...c, [di.end]: { ...c[di.end], x: nx, y: ny } } : c));
+        movedRef.current = true;
+        return;
+      }
       const nx = Math.round(p.x - di.offsetX);
       const ny = Math.round(p.y - di.offsetY);
       if (di.canMove) {
@@ -3672,7 +3894,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
             return { ...prev, [di.segId]: { ...seg, length_m: Math.round(px / PX_PER_M * 10) / 10 } };
           });
         }
-      } else if (!movedRef.current) {
+      } else if (!movedRef.current && di.id) {
         // A tap (no drag) on a node.
         const now = Date.now();
         const isDouble = nodeTapRef.current.id === di.id && now - nodeTapRef.current.t < 400;
@@ -3764,6 +3986,13 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
 
   const confirmPendingCable = () => {
     const id = genCableId();
+    // Movable connection points (terminals) at any board endpoint — junction-styled, with an ID.
+    const used = new Set(); lCables.forEach(c => { if (c.fromPt) used.add(c.fromPt.id); if (c.toPt) used.add(c.toPt.id); });
+    (reservedIdsRef.current || new Set()).forEach(x => used.add(x));
+    const genT = () => { let n = 1; while (used.has('T' + n)) n++; used.add('T' + n); return 'T' + n; };
+    const fN = lNodes[pendingCable.from], tN = lNodes[pendingCable.to];
+    const fromPt = (fN && (fN.kind || 'junction') === 'board') ? { id: genT(), x: Math.round(fN.x + 26), y: Math.round(fN.y + 22) } : undefined;
+    const toPt = (tN && (tN.kind || 'junction') === 'board') ? { id: genT(), x: Math.round(tN.x - 26), y: Math.round(tN.y + 22) } : undefined;
     setLCables([...lCables, {
       id, from: pendingCable.from, to: pendingCable.to,
       function: pendingCable.cable_function,
@@ -3773,6 +4002,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
       cos_phi: Number(pendingCable.cos_phi),
       route: pendingCable.route || [],
       catId: pendingCable.catId || undefined,
+      fromPt, toPt,
     }]);
     setPendingCable(null);
   };
@@ -3803,6 +4033,25 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
   const newTab = () => {
     commitDraftAndCreate?.(draftSnapshot());
   };
+  // Global tab bar (rendered above the editor) requests, handled here so the current
+  // drawing's live edits are saved before switching / creating / exiting.
+  useEffect(() => {
+    if (reqDrawingTab == null) return;
+    const target = reqDrawingTab;
+    if (setReqDrawingTab) setReqDrawingTab(null);
+    if (target !== activeProjectId) switchToTab(target);
+  }, [reqDrawingTab]);
+  useEffect(() => {
+    if (!reqNewTab) return;
+    if (setReqNewTab) setReqNewTab(false);
+    newTab();
+  }, [reqNewTab]);
+  useEffect(() => {
+    if (!reqExit) return;
+    if (setReqExit) setReqExit(false);
+    try { saveAllDrawings && saveAllDrawings(draftSnapshot()); } catch (e) {}
+    goHome ? goHome() : close();
+  }, [reqExit]);
   // Close (not delete) a drawing tab. Saves the active draft first so nothing is
   // lost, then hides the tab. The drawing stays available in the Project menu.
   const onCloseTab = (e, id) => {
@@ -4217,15 +4466,24 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
     const tb = targetBoard || {};
     const hasLoad = Number(tb.Ib) > 0;
     const cid = genCableId();
+    // Auto-dimension for the target board's consumption (temperature + grouping).
+    let autoType = Object.keys(cableTypes)[0], autoIn = Number(tb.In_main || 0);
+    if (hasLoad) {
+      const dim = autoDimensionCable({ Ib: Number(tb.Ib), V: Number(tb.V || 400), phases: Number(tb.phases || 3), cos_phi: Number(tb.cos_phi || 0.9), fn: 'Sub-board feeder', length_m: 1, n_bundle: 1, project, cableTypes });
+      if (dim) { if (dim.cable_type) autoType = dim.cable_type; if (dim.In != null) autoIn = dim.In; }
+    }
     const cable = {
       id: cid, from: fromId, to: bId,
       toExt: { pid: bPid, nid: bId, name: bName },
       function: 'Sub-board feeder',
       V: Number(tb.V || 400), phases: Number(tb.phases || 3),
-      cable_type: Object.keys(cableTypes)[0],
-      Ib: hasLoad ? Number(tb.Ib) : 0, In: Number(tb.In_main || 0),
+      cable_type: autoType,
+      Ib: hasLoad ? Number(tb.Ib) : 0, In: autoIn,
       cos_phi: Number(tb.cos_phi || 0.9),
       route: [], crossDrawing: true,
+      fromPt: (lNodes[fromId] && (lNodes[fromId].kind || 'junction') === 'board')
+        ? { id: (() => { const used = new Set(); lCables.forEach(c => { if (c.fromPt) used.add(c.fromPt.id); if (c.toPt) used.add(c.toPt.id); }); let n = 1; while (used.has('T' + n)) n++; return 'T' + n; })(), x: Math.round(lNodes[fromId].x + 26), y: Math.round(lNodes[fromId].y + 22) }
+        : undefined,
     };
     // Exactly one cable record on this drawing (replace any identical cross-drawing cable).
     const nextCables = [...lCables.filter(c => !(c.crossDrawing && c.from === fromId && c.toExt && c.toExt.pid === bPid && c.toExt.nid === bId)), cable];
@@ -4321,75 +4579,8 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
 
   return (
     <div className="fixed inset-0 bg-white z-30 flex flex-col" style={{ touchAction:'none' }}>
-      {/* Drawing tabs — top bar; double-click empty area to collapse */}
-      {(() => {
-        // Always render the bar with at least the active drawing, even if openTabs
-        // somehow got out of sync — so the tab bar (and Forside) never disappears.
-        let tabIds = (openTabs || []).filter(tid => (projectList || []).some(x => x.id === tid));
-        if (activeProjectId && !tabIds.includes(activeProjectId)) tabIds = [activeProjectId, ...tabIds];
-        if (tabIds.length === 0 && activeProjectId) tabIds = [activeProjectId];
-        // Always render the bar (even with no tabs) so "Ny" and "Forside" stay reachable.
-        return collapsedBars.tabs ? thinBar('tabs', '#E9E5D9') : (
-        <div ref={tabBarRefE} onDoubleClick={(e)=>{ if (e.target === e.currentTarget) toggleBar('tabs'); }}
-             title="Dobbeltklik på et tomt sted i fane-bjælken for at skjule den"
-             className="flex items-stretch overflow-x-auto border-b border-stone-200 py-0.5 select-none" style={{ backgroundColor: '#E9E5D9', scrollbarWidth:'thin' }}>
-          {tabIds.map(tid => {
-            const p = (projectList || []).find(x => x.id === tid) || { id: tid, name: 'Tegning' };
-            return (
-              <div key={p.id} onClick={()=>{ if (!renamingTab || renamingTab.id !== p.id) switchToTab(p.id); }}
-                   draggable={!(renamingTab && renamingTab.id === p.id)}
-                   onContextMenu={(e)=>{ e.preventDefault(); e.stopPropagation(); setRenamingTab({ id: p.id, value: p.name }); }}
-                   onDragStart={(e)=>{ dragTabRef.current = p.id; e.dataTransfer.effectAllowed='move'; try { e.dataTransfer.setData('text/plain', p.id); } catch(err){} }}
-                   onDragOver={(e)=>{ if (dragTabRef.current && dragTabRef.current !== p.id) { e.preventDefault(); e.dataTransfer.dropEffect='move'; if (dragOverTab !== p.id) setDragOverTab(p.id); } }}
-                   onDragLeave={()=>{ if (dragOverTab === p.id) setDragOverTab(null); }}
-                   onDrop={(e)=>{ e.preventDefault(); const from = dragTabRef.current; if (from && from !== p.id) reorderTabs && reorderTabs(from, p.id); dragTabRef.current=null; setDragOverTab(null); }}
-                   onDragEnd={(e)=>{ const from = dragTabRef.current; const bar = tabBarRefE.current;
-                      if (from && bar && popOutDrawing) { const r = bar.getBoundingClientRect(); if (e.clientY > r.bottom + 50 || e.clientY < r.top - 50 || e.clientX < r.left - 70 || e.clientX > r.right + 70) popOutDrawing(from); }
-                      dragTabRef.current=null; setDragOverTab(null); }}
-                   className={`group pl-3 pr-2 py-1 text-xs whitespace-nowrap border-r border-stone-300/50 flex items-center gap-1.5 ${(renamingTab && renamingTab.id === p.id) ? 'cursor-text' : 'cursor-grab active:cursor-grabbing'} rounded-t-lg ${dragOverTab===p.id ? 'ring-2 ring-stone-400' : ''} ${p.id===activeProjectId ? 'font-semibold' : 'text-stone-600 hover:bg-white/40'}`}
-                   style={p.id===activeProjectId ? { backgroundColor: '#D7D0BC', color: '#44403c' } : undefined}
-                   title="Klik: åbn · højreklik: omdøb · træk: flyt · træk ud eller ⧉: nyt vindue">
-                <Pencil size={11}/>
-                {(renamingTab && renamingTab.id === p.id) ? (
-                  <input autoFocus value={renamingTab.value}
-                         onChange={(e)=>setRenamingTab({ id: p.id, value: e.target.value })}
-                         onClick={(e)=>e.stopPropagation()}
-                         onBlur={()=>{ const nm = (renamingTab.value || '').trim(); if (nm) renameProject && renameProject(p.id, nm); setRenamingTab(null); }}
-                         onKeyDown={(e)=>{ if (e.key === 'Enter') { const nm = (renamingTab.value || '').trim(); if (nm) renameProject && renameProject(p.id, nm); setRenamingTab(null); } else if (e.key === 'Escape') { setRenamingTab(null); } }}
-                         className="bg-white/90 border border-stone-300 rounded px-1 text-xs outline-none focus:ring-1 focus:ring-stone-400"
-                         style={{ width: `${Math.max(6, (renamingTab.value || '').length + 1)}ch`, color:'#44403c' }}/>
-                ) : (
-                  <span>{p.name}</span>
-                )}
-                {!(renamingTab && renamingTab.id === p.id) && popOutDrawing && (
-                  <button onClick={(e)=>{ e.stopPropagation(); popOutDrawing(p.id); }} title="Åbn i nyt vindue"
-                          className="ml-1 rounded-md p-0.5 hover:bg-stone-300/70 text-stone-500">
-                    <ExternalLink size={11}/>
-                  </button>
-                )}
-                {tabIds.length > 1 && !(renamingTab && renamingTab.id === p.id) && (
-                  <button onClick={(e)=>onCloseTab(e, p.id)} title="Luk fane (sletter ikke tegningen)"
-                          className="rounded-md p-0.5 hover:bg-stone-300/70 text-stone-500">
-                    <X size={12}/>
-                  </button>
-                )}
-              </div>
-            );
-          })}
-          <button onClick={newTab} title="Ny tegning"
-                  className="px-3 py-1 text-xs text-stone-600 hover:bg-white/50 flex items-center gap-1 shrink-0">
-            <Plus size={13}/> Ny
-          </button>
-          {/* Back to start page — saves, closes the editor, opens the home page */}
-          <button onClick={()=>{ try { saveAllDrawings && saveAllDrawings(draftSnapshot()); } catch(e){} goHome ? goHome() : close(); }}
-                  className="ml-auto my-0.5 mr-1 px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 shrink-0 transition-colors hover:brightness-95"
-                  style={{ backgroundColor:'#D7D0BC', color:'#44403c' }}
-                  title="Gem og gå til forsiden">
-            <Home size={13}/> Forside
-          </button>
-        </div>
-        );
-      })()}
+      {/* Spacer for the fixed global drawing tab bar rendered above the editor */}
+      <div style={{ height: '34px', flexShrink: 0 }} />
 
       {/* Header — sits just below the tab bar, same thickness */}
       {/* Header — double-click to collapse to a thin strip */}
@@ -4585,6 +4776,15 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
             <span className="text-sm font-semibold text-stone-800 flex items-center gap-1"><Layers size={15}/> Kategorier · alle tegninger</span>
             <button onClick={()=>setCatPanel(false)} className="text-xs px-2 py-1 bg-stone-100 rounded">Luk</button>
           </div>
+          {projectCats && projectCats.length > 1 && (
+            <div className="flex items-center gap-2 mb-2 flex-wrap bg-stone-100/60 rounded-lg px-2 py-1.5">
+              <span className="text-[11px] text-stone-600">Vælg kategorier og slå dem sammen manuelt (fx parallelle føringsveje):</span>
+              <span className="text-[11px] font-semibold text-stone-700">{catSel.size} valgt</span>
+              <button onClick={mergeSelectedCats} disabled={catSel.size < 2}
+                      className="ml-auto text-xs px-2 py-1 rounded font-semibold bg-blue-600 text-white disabled:opacity-40 flex items-center gap-1"><Link2 size={12}/> Slå sammen</button>
+              {catSel.size > 0 && <button onClick={()=>setCatSel(new Set())} className="text-[11px] text-stone-500 underline">ryd</button>}
+            </div>
+          )}
           {(projectCatsLoading && !projectCats) ? (
             <p className="text-xs text-stone-400">Beregner kategorier på tværs af tegninger …</p>
           ) : (!projectCats || projectCats.length === 0) ? (
@@ -4601,13 +4801,22 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
                 const perDrawing = {};
                 cat.segs.forEach(x => { (perDrawing[x.drawingId] = perDrawing[x.drawingId] || { name: x.drawingName, n: 0 }).n++; });
                 const palette = ['#1565C0', '#2e7d32', '#c62828', '#f9a825', '#6a1b9a', '#00838f', '#37474F', '#e91e63'];
+                const selKey = cat.manualGroup || `idx:${idx}`;
                 return (
-                  <div key={idx} className="border border-stone-200 rounded-lg p-2">
+                  <div key={idx} className={`border rounded-lg p-2 ${catSel.has(selKey) ? 'border-blue-400 ring-1 ring-blue-200' : 'border-stone-200'}`}>
                     <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+                      {projectCats.length > 1 && (
+                        <input type="checkbox" checked={catSel.has(selKey)} onChange={()=>toggleCatSel(selKey)} title="Vælg til sammenlægning" className="w-4 h-4 accent-blue-600 shrink-0"/>
+                      )}
                       <span className="inline-block w-5 h-5 rounded-full border border-stone-300 shrink-0" style={{ background: cat.color }}/>
                       <span className="text-xs font-semibold text-stone-700">Kategori {idx+1}</span>
                       <span className="text-xs text-stone-400">({cat.segs.length} segm.{widths.length ? ` · ${widths.join('/')} mm` : ''})</span>
                       {multi && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-800 font-semibold">på tværs af {cat.drawingIds.size} tegninger</span>}
+                      {cat.manualGroup && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-800 font-semibold flex items-center gap-1"><Link2 size={9}/> sammenlagt
+                          <button onClick={()=>unmergeCat(cat)} title="Ophæv sammenlægning" className="ml-1 text-purple-700 hover:text-purple-900"><X size={10}/></button>
+                        </span>
+                      )}
                     </div>
                     {/* Which drawings the category spans (tap to jump) */}
                     <div className="flex flex-wrap gap-1 mb-1.5">
@@ -4652,7 +4861,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
               })}
             </div>
           )}
-          <p className="text-[11px] text-stone-400 mt-2">En kategori samler føringsveje, der er forbundet gennem knuder — også på tværs af tegninger via off-page-links. Tavler og laster afgrænser kategorier.</p>
+          <p className="text-[11px] text-stone-400 mt-2">En kategori samler føringsveje, der er forbundet gennem knuder — også på tværs af tegninger via off-page-links. Vil du samle ikke-forbundne føringsveje (fx parallelle træk), så vælg dem med afkrydsning og tryk "Slå sammen".</p>
         </div>
       )}
 
@@ -5100,6 +5309,22 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
               </g>
             );
           })}
+          {/* Cable connection points (terminals) at boards — junction-styled, movable, with an ID */}
+          {lCables.flatMap(c => [['fromPt', c.from], ['toPt', c.to]].map(([end, boardId]) => {
+            const pt = c[end]; if (!pt) return null;
+            const b = lNodes[boardId];
+            const isDrag = dragging === `${c.id}:${end}`;
+            return (
+              <g key={`cpt-${c.id}-${end}`}>
+                {b && <line x1={b.x} y1={b.y} x2={pt.x} y2={pt.y} stroke="#37474F" strokeWidth="1" strokeDasharray="3,2" opacity="0.5"/>}
+                <g style={{ cursor:'grab', touchAction:'none' }} onPointerDown={(e)=>startCablePtDrag(e, c.id, end)}>
+                  <circle cx={pt.x} cy={pt.y} r={6} fill="#fff" stroke={isDrag ? '#1565C0' : '#37474F'} strokeWidth="2"/>
+                  <circle cx={pt.x} cy={pt.y} r={2} fill="#37474F"/>
+                  <text x={pt.x} y={pt.y - 9} textAnchor="middle" fontSize="8" fontWeight="bold" fill="#37474F" style={{ pointerEvents:'none', userSelect:'none' }}>{pt.id}</text>
+                </g>
+              </g>
+            );
+          }))}
         </svg>
 
         {/* Empty state — hidden as soon as any object is placed */}
@@ -5450,6 +5675,11 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
                     <option key={n.id} value={n.id}>Kategori {i+1} · {Array.from(n.widths).sort((a,b)=>a-b).join('/') || '?'} mm · {n.count} segm.</option>
                   ))}
                 </select>
+              </div>
+            )}
+            {pendingCable.autoDimNote && (
+              <div className={`text-xs rounded p-2 mb-2 border ${pendingCable.cable_type ? 'bg-green-50 border-green-200 text-green-900' : 'bg-amber-50 border-amber-200 text-amber-900'}`}>
+                ⚡ {pendingCable.autoDimNote}{pendingCable.cable_type ? `: ${pendingCable.cable_type}` : ''}
               </div>
             )}
             {pendingCable.adoptedFromLoad && (
