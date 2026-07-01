@@ -17,6 +17,12 @@ const appStorage = {
   async delete(key) {
     return window.storage.delete(key);
   },
+  async keys(prefix) {
+    try { const r = await window.storage.list(prefix || ''); return (r && r.keys) ? r.keys : []; } catch (e) { return []; }
+  },
+  async setImage(key, dataUrl) { return this.set(key, dataUrl); },
+  async getImage(key) { return this.get(key); },
+  async backend() { return 'window.storage'; },
 };
 
 
@@ -864,11 +870,12 @@ export default function App() {
   const saveBundle = async (id, bundle) => {
     const bg = bundle.bgImage || null;
     const meta = bg ? { ...bg, dataUrl: undefined } : null;   // bundle keeps position/scale, not the image
+    const nm = (projectList.find(p => p.id === id) || {}).name;   // store name so the drawing can be recovered if the index is lost
     let okData = false;
-    try { okData = await appStorage.set(projKey(id), JSON.stringify({ ...bundle, bgImage: meta })); } catch (e) { okData = false; }
+    try { okData = await appStorage.set(projKey(id), JSON.stringify({ ...bundle, bgImage: meta, _name: nm })); } catch (e) { okData = false; }
     let okBg = true;
     if (bg && bg.dataUrl) {
-      try { okBg = await appStorage.set(bgKey(id), bg.dataUrl); } catch (e) { okBg = false; }
+      try { okBg = await appStorage.setImage(bgKey(id), bg.dataUrl); } catch (e) { okBg = false; }
     } else {
       try { await appStorage.delete(bgKey(id)); } catch (e) {}
     }
@@ -884,7 +891,7 @@ export default function App() {
     if (b && b.bgImage) {
       // Newer drawings store the image separately; older ones embed dataUrl in the bundle.
       if (!b.bgImage.dataUrl) {
-        try { const bg = await appStorage.get(bgKey(id)); if (bg) b.bgImage = { ...b.bgImage, dataUrl: bg }; } catch (e) {}
+        try { const bg = await appStorage.getImage(bgKey(id)); if (bg) b.bgImage = { ...b.bgImage, dataUrl: bg }; } catch (e) {}
       }
     }
     return b;
@@ -909,14 +916,32 @@ export default function App() {
         const idxRaw = await appStorage.get(STORAGE_INDEX);
         let idx = null;
         try { idx = idxRaw ? JSON.parse(idxRaw) : null; } catch (e) { idx = null; }
-        if (idx && Array.isArray(idx.projects) && idx.projects.length > 0) {
-          const list = idx.projects;
+
+        // Build the project list from the index, then RECOVER any drawing whose bundle
+        // exists in storage but is missing from the index — so a lost/empty index can
+        // never make saved drawings disappear.
+        let list = (idx && Array.isArray(idx.projects)) ? idx.projects.slice() : [];
+        try {
+          const allKeys = await appStorage.keys(projKey(''));
+          const known = new Set(list.map(p => p.id));
+          const orphans = [];
+          for (const k of allKeys) {
+            const pid = String(k).slice(projKey('').length);
+            if (!pid || known.has(pid)) continue;
+            known.add(pid);
+            let nm = null;
+            try { const raw = await appStorage.get(projKey(pid)); if (raw) { const b = JSON.parse(raw); nm = b && b._name; } } catch (e) {}
+            orphans.push({ id: pid, name: nm || `Tegning ${list.length + orphans.length + 1}` });
+          }
+          if (orphans.length) list = [...list, ...orphans];
+        } catch (e) {}
+
+        if (list.length > 0) {
           setProjectList(list);
           const validIds = new Set(list.map(p => p.id));
-          const activeId = (idx.activeId && validIds.has(idx.activeId)) ? idx.activeId : list[0].id;
+          const activeId = (idx && idx.activeId && validIds.has(idx.activeId)) ? idx.activeId : list[0].id;
           setActiveProjectId(activeId);
-          // Restore which tabs were open; default to just the active drawing.
-          let tabs = (idx.openTabs ?? []).filter(t => validIds.has(t));
+          let tabs = ((idx && idx.openTabs) ?? []).filter(t => validIds.has(t));
           if (activeId && !tabs.includes(activeId)) tabs = [activeId, ...tabs];
           if (tabs.length === 0 && activeId) tabs = [activeId];
           setOpenTabs(tabs);
@@ -924,6 +949,8 @@ export default function App() {
             const b = await loadBundle(activeId);
             if (b) applyBundle(b);
           }
+          // Re-persist a healthy index (recovers names/order after any earlier loss).
+          try { await appStorage.set(STORAGE_INDEX, JSON.stringify({ projects: list, activeId, openTabs: tabs })); } catch (e) {}
         } else {
           // No usable index → migrate legacy single-project state or create a fresh drawing.
           const legacy = await appStorage.get('cable_app_state');
@@ -2164,6 +2191,25 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
   const [canUndo, setCanUndo] = useState(false);
   const [bgBusy, setBgBusy] = useState(false);            // PDF rendering in progress
   const [bgPanel, setBgPanel] = useState(false);          // show background adjust panel
+  const [storageInfo, setStorageInfo] = useState(null);   // { usedMB, quotaMB, persisted }
+  useEffect(() => {
+    if (!bgPanel) return;
+    let alive = true;
+    (async () => {
+      try {
+        let usedMB = null, quotaMB = null, persisted = null, backend = null;
+        if (navigator.storage && navigator.storage.estimate) {
+          const est = await navigator.storage.estimate();
+          usedMB = est.usage != null ? est.usage / (1024*1024) : null;
+          quotaMB = est.quota != null ? est.quota / (1024*1024) : null;
+        }
+        if (navigator.storage && navigator.storage.persisted) { persisted = await navigator.storage.persisted(); }
+        try { backend = appStorage.backend ? await appStorage.backend() : null; } catch (e) {}
+        if (alive) setStorageInfo({ usedMB, quotaMB, persisted, backend });
+      } catch (e) { if (alive) setStorageInfo(null); }
+    })();
+    return () => { alive = false; };
+  }, [bgPanel, lBg]);
   const [bgStatus, setBgStatus] = useState(null);         // visible status/error message
   const [hideChrome, setHideChrome] = useState(false);    // hide panels for more drawing space
   const [junctionShape, setJunctionShape] = useState('dot');  // dot|tee|corner|cross — chosen before placing
@@ -3203,7 +3249,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
         const base = page.getViewport({ scale: 1 });
         // Render at the highest resolution that still fits the storage budget, so the
         // plan stays sharp when zooming in. Step down only if the JPEG gets too large.
-        const BUDGET = 2.6 * 1024 * 1024;                     // ~2.6 MB raw bytes (≈2× as text in IndexedDB)
+        const BUDGET = 1.4 * 1024 * 1024;                     // ~1.4 MB raw bytes — keep backgrounds small to fit shared quota
         const targets = [4400, 3600, 3000, 2400, 1900];       // long-edge px, high → low
         for (let i = 0; i < targets.length; i++) {
           const fit = Math.min(3.5, targets[i] / Math.max(base.width, base.height));
@@ -3233,7 +3279,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
         dataUrl = await new Promise((res) => {
           const im = new Image();
           im.onload = () => {
-            const BUDGET = 2.6 * 1024 * 1024;
+            const BUDGET = 1.4 * 1024 * 1024;
             const longest = Math.max(im.naturalWidth, im.naturalHeight);
             if (longest <= 4400 && raw.length * 0.75 <= BUDGET) { res(raw); return; }
             const targets = [4400, 3600, 3000, 2400, 1900];
@@ -3831,6 +3877,13 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
               <button onClick={()=>setBgPanel(false)} className="text-xs px-2 py-1 bg-stone-100 rounded">Luk</button>
             </div>
           </div>
+          {storageInfo && (storageInfo.usedMB != null || storageInfo.backend) && (
+            <div className="text-[11px] text-stone-500">
+              {storageInfo.backend ? `Lager: ${storageInfo.backend === 'indexeddb' ? 'IndexedDB' : storageInfo.backend === 'localstorage' ? 'localStorage (begrænset!)' : storageInfo.backend} · ` : ''}
+              {storageInfo.usedMB != null ? `${storageInfo.usedMB.toFixed(1)} MB${storageInfo.quotaMB ? ` af ~${Math.round(storageInfo.quotaMB)} MB` : ''}` : ''}
+              {storageInfo.persisted === true ? ' · vedvarende' : storageInfo.persisted === false ? ' · ikke-vedvarende' : ''}
+            </div>
+          )}
 
           {/* Calibration / scale */}
           <div className="border border-stone-200 rounded-lg p-2 bg-stone-100/40 space-y-1.5">
