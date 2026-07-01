@@ -291,8 +291,13 @@ const DEFAULT_PROJECT = {
   site:'NewProj', location:'01', description:'New project',
   ambient_c:35, z_source_mohm:40, ls_threshold:0.30,
   transformer:null, n_transformers_parallel:1,
+  tray_height_m:3.0,   // default cable-tray height above floor (used for vertical drops)
   vd_limits:{ 'Lighting circuit':3.0, 'Rack feeder':2.0, _default:5.0 },
 };
+
+// Effective tray-segment length = horizontal run on the plan + any vertical rise/drop.
+// Vertical segments (risers) therefore count towards the total føringsvej length.
+const segLen = (s) => s ? ((Number(s.length_m) || 0) + (Number(s.rise_m) || 0)) : 0;
 
 // A fresh, empty project bundle
 function emptyBundle() {
@@ -523,7 +528,7 @@ function analyze(state) {
   cables.forEach(c => {
     const ct = cableTypes[c.cable_type];
     if (!ct) { vd[c.id] = null; return; }
-    const L = (c.route || []).reduce((a,s)=>a+(segments[s]?.length_m ?? 0), 0) + (c.to.match(/^(HT|UT|UPS|PDU|N-)/) ? 0 : 1.5);
+    const L = (c.route || []).reduce((a,s)=>a+segLen(segments[s]), 0) + (c.to.match(/^(HT|UT|UPS|PDU|N-)/) ? 0 : 1.5);
     const K = c.phases === 3 ? SQRT3 : 2.0;
     const duV = K * RHO_70 * L * c.Ib * c.cos_phi / (ct.S_mm2 * ct.is_parallel);
     const duLocal = duV / c.V * 100;
@@ -551,7 +556,7 @@ function analyze(state) {
       const cb = cables.find(x => x.id === cid);
       const ct = cableTypes[cb.cable_type];
       if (!ct) return;
-      const L = (cb.route || []).reduce((a,s)=>a+(segments[s]?.length_m ?? 0), 0) + (cb.to.match(/^(HT|UT|UPS|PDU|N-)/) ? 0 : 1.5);
+      const L = (cb.route || []).reduce((a,s)=>a+segLen(segments[s]), 0) + (cb.to.match(/^(HT|UT|UPS|PDU|N-)/) ? 0 : 1.5);
       const rPerM = RHO_70 / (ct.S_mm2 * ct.is_parallel) * 1000;
       z += 2 * rPerM * L;
     });
@@ -782,7 +787,7 @@ function exportProjectXlsx(drawings, project, filename) {
   sheet(cl, 'Kabler');
 
   // Føringsveje (all drawings) with category + drawing
-  const tr = [['Tegning', 'Segment', 'Kategori', 'Fra', 'Til', 'Længde [m]', 'Bakketype', 'Bredde [mm]', 'Højde [mm]', 'Antal kabler', 'Kabler', 'Fyldning [%]', 'Maks [%]', 'Status']];
+  const tr = [['Tegning', 'Segment', 'Kategori', 'Fra', 'Til', 'Længde [m]', 'Lodret [m]', 'Samlet længde [m]', 'Bakketype', 'Bredde [mm]', 'Højde [mm]', 'Antal kabler', 'Kabler', 'Fyldning [%]', 'Maks [%]', 'Status']];
   drawings.forEach(d => {
     let A; try { A = analyze({ cables: d.cables || [], segments: d.segments || {}, cableTypes: d.cableTypes, trayTypes: d.trayTypes, project: d.project || project }); } catch (e) { A = null; }
     Object.entries(d.segments || {}).forEach(([sid, s]) => {
@@ -791,7 +796,7 @@ function exportProjectXlsx(drawings, project, filename) {
       const occ = A && A.occByLS[sid] ? A.occByLS[sid] : null;
       const cables_in = occ ? occ.LS1.concat(occ.LS2, occ.LS3) : [];
       tr.push([
-        d.name, sid, catOf[`${d.name}::${sid}`] ?? '', s.from, s.to, s.length_m, s.tray_type,
+        d.name, sid, catOf[`${d.name}::${sid}`] ?? '', s.from, s.to, s.length_m, Number(s.rise_m) || 0, segLen(s), s.tray_type,
         num(tt?.width_mm), num(tt?.height_mm), num(f.count), cables_in.join(', '), num(f.fill_pct), num(f.max), num(f.status),
       ]);
     });
@@ -2020,6 +2025,7 @@ function ProjectTab({ project, setProject, counts, critical, tight, loadTemplate
         <FormField label="Location (+)" value={project.location} onChange={v=>update('location', v)} />
         <FormField label="Description" value={project.description} onChange={v=>update('description', v)} />
         <FormField label="Ambient temperature [°C]" type="number" value={project.ambient_c} onChange={v=>update('ambient_c', parseInt(v)||30)} hint={`k_temp = ${kAmbient(project.ambient_c)}`} />
+        <FormField label="Kabelbakkers højde over gulv [m]" type="number" step="0.1" value={project.tray_height_m ?? 3.0} onChange={v=>update('tray_height_m', parseFloat(v)||0)} hint="standard for lodrette træk (risere til gulv)" />
         <FormField label="LS threshold (Ib/Iz)" type="number" step="0.01" value={project.ls_threshold} onChange={v=>update('ls_threshold', parseFloat(v)||0.30)} />
         <div className="text-xs text-stone-600 mt-2">
           ΔU limits: Lighting {project.vd_limits['Lighting circuit']}%, Rack {project.vd_limits['Rack feeder']}%, default {project.vd_limits._default}%
@@ -2217,7 +2223,7 @@ function TraysTab({ segments, setSegments, trayTypes, A, setEditing, setDrawingO
                   <StatusBadge status={f?.status}/>
                 </div>
                 <div className="text-sm text-stone-700">{s.from} → {s.to}</div>
-                <div className="text-xs text-stone-500">{s.length_m}m · {s.tray_type}</div>
+                <div className="text-xs text-stone-500">{Number(s.rise_m) > 0 ? `${s.length_m}m + ${s.rise_m}m lodret = ${((Number(s.length_m)||0)+(Number(s.rise_m)||0)).toFixed(1)}m` : `${s.length_m}m`} · {s.tray_type}</div>
               </div>
               <div className="flex gap-1">
                 <button onClick={()=>setEditing({ kind:'segment', item:{id, ...s}, isNew:false })} className="p-2 text-stone-700"><Edit2 size={16}/></button>
@@ -3339,6 +3345,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
         }
         setCableMsg(null);
         const route = findRoute(lSegs, cableFrom, id);
+        const catId = (route && route.length) ? (networkInfo.segNet[route[0]] || null) : null;
         // When the destination is a load, the cable adopts the load's electrical data.
         // When it is a board WITH a specified consumption, adopt that so the feeding
         // main cable can be dimensioned without modelling individual loads.
@@ -3346,7 +3353,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
         const boardHasLoad = kind === 'board' && Number(node.Ib) > 0;
         setPendingCable({
           from: cableFrom, to: id, route: route || [], noPath: route === null,
-          toKind: kind,
+          toKind: kind, catId,
           cable_type: Object.keys(cableTypes)[0],
           cable_function: isLoad ? (node.function || 'Socket circuit') : 'Sub-board feeder',
           Ib: isLoad ? (node.Ib || 0) : (boardHasLoad ? Number(node.Ib) : 0),
@@ -3704,6 +3711,15 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
     setPending(null);
   };
 
+  // Compute a cable route constrained to a single tray category (network).
+  const routeInCategory = (from, to, catId) => {
+    const net = catId ? networkInfo.byId[catId] : null;
+    if (!net) return findRoute(lSegs, from, to);
+    const sub = {};
+    net.segIds.forEach(sid => { if (lSegs[sid]) sub[sid] = lSegs[sid]; });
+    return findRoute(sub, from, to);
+  };
+
   const confirmPendingCable = () => {
     const id = genCableId();
     setLCables([...lCables, {
@@ -3714,6 +3730,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
       Ib: Number(pendingCable.Ib), In: Number(pendingCable.In),
       cos_phi: Number(pendingCable.cos_phi),
       route: pendingCable.route || [],
+      catId: pendingCable.catId || undefined,
     }]);
     setPendingCable(null);
   };
@@ -5361,6 +5378,19 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
                 Rute fundet automatisk: {pendingCable.route.length} segment(er) → {pendingCable.route.join(' → ')}
               </div>
             )}
+            {networkInfo.networks.length > 0 && (
+              <div className="mb-2">
+                <label className="block text-xs font-semibold text-stone-600 mb-1">Føringsvejskategori</label>
+                <select value={pendingCable.catId || ''}
+                        onChange={(e)=>{ const cid = e.target.value || null; const r = routeInCategory(pendingCable.from, pendingCable.to, cid); setPendingCable({...pendingCable, catId: cid, route: r || [], noPath: r === null}); }}
+                        className="w-full border border-stone-300 rounded-lg px-2 py-2 text-sm bg-white">
+                  <option value="">Automatisk (korteste vej gennem alle)</option>
+                  {networkInfo.networks.map((n, i) => (
+                    <option key={n.id} value={n.id}>Kategori {i+1} · {Array.from(n.widths).sort((a,b)=>a-b).join('/') || '?'} mm · {n.count} segm.</option>
+                  ))}
+                </select>
+              </div>
+            )}
             {pendingCable.adoptedFromLoad && (
               <div className="text-xs bg-stone-100 border border-stone-300 rounded p-2 mb-3 text-stone-800">
                 Kabeldata er automatisk overtaget fra lasten {pendingCable.to} (Ib, In, V, faser, funktion). Tilret om nødvendigt.
@@ -5372,6 +5402,28 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
               <FormField label="Ib [A]" type="number" value={pendingCable.Ib} onChange={v=>setPendingCable({...pendingCable, Ib: v})}/>
               <FormField label="In [A]" type="number" value={pendingCable.In} onChange={v=>setPendingCable({...pendingCable, In: v})}/>
             </div>
+            {(() => {
+              const Ib = Number(pendingCable.Ib) || 0;
+              if (Ib <= 0) return <div className="text-[11px] text-stone-400 mb-1">Angiv Ib for at få et automatisk kabel-forslag (Iz ≥ Ib).</div>;
+              const L = (pendingCable.route || []).reduce((a, s) => a + segLen(lSegs[s]), 0) || 1;
+              let nb = 1;
+              (pendingCable.route || []).forEach(sid => { const n = lCables.filter(c => (c.route || []).includes(sid)).length + 1; if (n > nb) nb = n; });
+              const res = findCableCandidates({ Ib, V: Number(pendingCable.V) || 400, phases: Number(pendingCable.phases) || 3, cos_phi: Number(pendingCable.cos_phi) || 0.9, fn: pendingCable.cable_function, length_m: L, n_bundle: nb, ls: 'LS2', project, cableTypes });
+              return (
+                <div className="mt-1 mb-1 border border-blue-200 bg-blue-50/60 rounded-lg p-2">
+                  <div className="text-xs font-semibold text-blue-900 mb-1">Forslag — Iz ≥ Ib · In {res.In || '—'} A · {nb} kabel/bundt · {L.toFixed(1)} m</div>
+                  {res.candidates && res.candidates.length ? res.candidates.map(c => (
+                    <button key={c.name} onClick={()=>setPendingCable({...pendingCable, cable_type: c.name, In: res.In})}
+                            className={`w-full text-left text-xs px-2 py-1.5 rounded mb-1 flex justify-between items-center gap-2 ${pendingCable.cable_type===c.name ? 'bg-blue-600 text-white' : 'bg-white border border-blue-200 text-blue-900 hover:bg-blue-100'}`}>
+                      <span className="font-semibold truncate">{c.name}</span>
+                      <span className="shrink-0">Iz {c.iz_final} A · +{c.margin} A · ΔU {c.du_pct}%</span>
+                    </button>
+                  )) : (
+                    <div className="text-xs text-red-700">Ingen kabeltype i kataloget opfylder Iz ≥ Ib for denne føring. Vælg et større tværsnit, parallelle kabler eller reducér belastningen.</div>
+                  )}
+                </div>
+              );
+            })()}
             <div className="grid grid-cols-3 gap-2">
               <FormField label="V" type="number" value={pendingCable.V} onChange={v=>setPendingCable({...pendingCable, V: v})}/>
               <FormField label="Faser" type="number" value={pendingCable.phases} onChange={v=>setPendingCable({...pendingCable, phases: v})}/>
@@ -5824,7 +5876,7 @@ function CategoryEditModal({ net, netIndex, lSegs, lNodes, trayTypes, close, ope
                         className="w-full flex items-center gap-2 px-2 py-2 bg-stone-50 hover:bg-stone-100 rounded-lg text-left text-sm">
                   <span className="font-semibold text-stone-700">{id}</span>
                   <span className="text-xs text-stone-500">{s.from} → {s.to}</span>
-                  <span className="text-xs text-stone-400 ml-auto">{w ? `${w} mm` : ''} · {s.length_m} m</span>
+                  <span className="text-xs text-stone-400 ml-auto">{w ? `${w} mm` : ''} · {Number(s.rise_m) > 0 ? `${((Number(s.length_m)||0)+(Number(s.rise_m)||0)).toFixed(1)} m (m. ${s.rise_m} m lodret)` : `${s.length_m} m`}</span>
                   <Edit2 size={13} className="text-stone-700"/>
                 </button>
               );
@@ -5871,6 +5923,7 @@ function CategoryEditModal({ net, netIndex, lSegs, lNodes, trayTypes, close, ope
 function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addWaypoint, removeWaypoint, straightenOne }) {
   const s = lSegs[id];
   const [length_m, setL] = useState(s.length_m);
+  const [rise_m, setRise] = useState(s.rise_m ?? 0);
   const [tray_type, setTT] = useState(s.tray_type);
   const [color, setColor] = useState(s.color || '');
   const [lineStyle, setLineStyle] = useState(s.lineStyle || 'solid');
@@ -5881,6 +5934,8 @@ function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addW
         <h3 className="font-bold mb-3 text-stone-800">Segment {id}</h3>
         <p className="text-xs text-stone-500 mb-3">{s.from} → {s.to}</p>
         <FormField label="Længde [m]" type="number" step="0.5" value={length_m} onChange={setL}/>
+        <FormField label="Lodret træk [m]" type="number" step="0.5" value={rise_m} onChange={setRise} hint="stigning/fald for risere — lægges til længden"/>
+        <p className="text-xs text-stone-500 -mt-1 mb-2">Samlet føringsvejslængde: <b className="text-stone-700">{((Number(length_m)||0) + (Number(rise_m)||0)).toFixed(1)} m</b></p>
         <FormField label="Højde / montagekote [mm]" type="number" value={elevation_mm} onChange={setElev} hint="fx 3000 = 3 m over gulv (valgfri)"/>
         <Selector label="Tray type (bredden bestemmer tykkelsen)" value={tray_type} onChange={setTT} options={Object.keys(trayTypes)}/>
 
@@ -5933,7 +5988,7 @@ function SegEditDialog({ id, setId, lSegs, trayTypes, updateSeg, deleteSeg, addW
         <div className="flex gap-2 mt-3">
           <button onClick={()=>setId(null)} className="flex-1 py-3 border rounded-lg font-semibold">Annuller</button>
           <button onClick={()=>deleteSeg(id)} className="flex-1 py-3 bg-red-600 text-white rounded-lg font-semibold flex items-center justify-center gap-1"><Trash2 size={14}/> Slet</button>
-          <button onClick={()=>updateSeg(id, { length_m: Number(length_m), tray_type, color: color || undefined, lineStyle, elevation_mm: elevation_mm === '' ? undefined : Number(elevation_mm) })} className="flex-1 py-3 bg-stone-800 text-white rounded-lg font-semibold">Gem</button>
+          <button onClick={()=>updateSeg(id, { length_m: Number(length_m), rise_m: Number(rise_m) || 0, tray_type, color: color || undefined, lineStyle, elevation_mm: elevation_mm === '' ? undefined : Number(elevation_mm) })} className="flex-1 py-3 bg-stone-800 text-white rounded-lg font-semibold">Gem</button>
         </div>
       </div>
     </div>
@@ -5956,6 +6011,7 @@ function EditModal({ editing, setEditing, cableTypes, trayTypes, transformerType
     } else if (editing.kind === 'segment') {
       const { id, ...rest } = form;
       rest.length_m = Number(rest.length_m);
+      rest.rise_m = Number(rest.rise_m) || 0;
       if (editing.isNew || editing.item.id !== id) {
         const newSegs = {...segments};
         if (!editing.isNew) delete newSegs[editing.item.id];
@@ -6021,6 +6077,7 @@ function EditModal({ editing, setEditing, cableTypes, trayTypes, transformerType
             <FormField label="From" value={form.from} onChange={v=>set('from',v)}/>
             <FormField label="To" value={form.to} onChange={v=>set('to',v)}/>
             <FormField label="Length [m]" type="number" step="0.1" value={form.length_m} onChange={v=>set('length_m',v)}/>
+            <FormField label="Lodret træk [m]" type="number" step="0.1" value={form.rise_m ?? 0} onChange={v=>set('rise_m',v)} hint="stigning/fald for risere — lægges til længden"/>
             <Selector label="Tray type" value={form.tray_type} onChange={v=>set('tray_type',v)} options={Object.keys(trayTypes)}/>
           </>
         )}
