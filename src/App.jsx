@@ -726,7 +726,7 @@ function exportProjectXlsx(drawings, project, filename) {
       const v = A && A.vd[c.id] ? A.vd[c.id] : {};
       const s = A && A.sc[c.id] ? A.sc[c.id] : {};
       cl.push([
-        d.name, c.id, c.from, c.to, c.function, num(der.ls), c.V, c.phases, c.cable_type, num(ct?.cross_section),
+        d.name, c.id, c.from, c.toExt ? `${c.toExt.name} / ${c.toExt.nid}` : c.to, c.function, num(der.ls), c.V, c.phases, c.cable_type, num(ct?.cross_section),
         c.Ib, c.In, num(der.iz_final), num(der.margin), num(der.status), (c.route || []).join(' → '),
         num(v.du_total), num(v.limit), num(v.status), num(s.ik_min), num(s.status),
       ]);
@@ -1721,6 +1721,59 @@ function LinkDialog({ fromNodeId, projects, loadDrawingNodes, onConfirm, onClose
     </div>
   );
 }
+function XCableDialog({ fromId, projects, loadDrawingNodes, onConfirm, onClose }) {
+  const [pid, setPid] = useState(projects[0]?.id || '');
+  const [nodesMap, setNodesMap] = useState({});
+  const [nid, setNid] = useState('');
+  const [loading, setLoading] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    if (!pid) { setNodesMap({}); setNid(''); return; }
+    setLoading(true);
+    loadDrawingNodes(pid).then(ns => {
+      if (!alive) return;
+      setNodesMap(ns || {});
+      const boards = Object.keys(ns || {}).filter(k => (ns[k]?.kind === 'board'));
+      setNid(boards[0] || '');
+      setLoading(false);
+    });
+    return () => { alive = false; };
+  }, [pid]);
+  const boardIds = Object.keys(nodesMap).filter(k => nodesMap[k]?.kind === 'board');
+  return (
+    <div className="fixed inset-0 bg-black/50 z-40 flex items-end lg:items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white p-4 rounded-2xl w-full lg:max-w-md" onClick={e=>e.stopPropagation()}>
+        <h3 className="font-bold mb-1 text-stone-800 flex items-center gap-2"><Cable size={18}/> Kabel til tavle på anden tegning</h3>
+        <p className="text-xs text-stone-500 mb-3">Træk et kabel fra tavlen <b className="text-stone-700">{fromId}</b> til en tavle på en anden tegning. Kablet hører til og dimensioneres på denne tegning.</p>
+        {projects.length === 0 ? (
+          <div className="text-sm text-stone-500 py-3">Der er ingen andre tegninger endnu. Opret en ekstra tegning først.</div>
+        ) : (
+          <>
+            <label className="block text-xs font-semibold text-stone-600 mb-1">Tegning</label>
+            <select value={pid} onChange={e=>setPid(e.target.value)} className="w-full border border-stone-300 rounded-lg px-2 py-2 text-sm mb-3 bg-white">
+              {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <label className="block text-xs font-semibold text-stone-600 mb-1">Tavle på tegningen</label>
+            {loading ? (
+              <div className="text-sm text-stone-400 py-2 mb-3">Indlæser tavler …</div>
+            ) : boardIds.length ? (
+              <select value={nid} onChange={e=>setNid(e.target.value)} className="w-full border border-stone-300 rounded-lg px-2 py-2 text-sm mb-3 bg-white">
+                {boardIds.map(id => <option key={id} value={id}>{id}{nodesMap[id]?.board_type ? ` (${nodesMap[id].board_type})` : ''}{Number(nodesMap[id]?.Ib) > 0 ? ` · ${nodesMap[id].Ib} A` : ''}</option>)}
+              </select>
+            ) : (
+              <div className="text-sm text-stone-400 py-2 mb-3">Ingen tavler på den valgte tegning.</div>
+            )}
+          </>
+        )}
+        <div className="flex gap-2 mt-2">
+          <button onClick={onClose} className="flex-1 py-2.5 border border-stone-300 rounded-lg font-semibold text-sm">Annuller</button>
+          <button disabled={!pid || !nid} onClick={()=>onConfirm(pid, nid, nodesMap[nid])}
+                  className="flex-[2] py-2.5 rounded-lg font-semibold text-sm text-white disabled:opacity-40" style={{ backgroundColor:'#44403c' }}>Opret kabel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 function NewProjectModal({ close, createProject }) {
   const [name, setName] = useState('');
   const [template, setTemplate] = useState('empty');
@@ -1973,7 +2026,7 @@ function CablesTab({ cables, setCables, cableTypes, segments, A, setEditing, set
                   <LSBadge ls={d?.ls} />
                   <StatusBadge status={d?.status} />
                 </div>
-                <div className="text-sm text-stone-700">{c.from} → {c.to}</div>
+                <div className="text-sm text-stone-700">{c.from} → {c.toExt ? `${c.toExt.name} / ${c.toExt.nid}` : c.to}{c.toExt ? ' ⭢' : ''}</div>
                 <div className="text-xs text-stone-500">{c.function} · {c.cable_type} · {c.V}V {c.phases}P</div>
               </div>
               <div className="flex gap-1">
@@ -2606,6 +2659,7 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
   const [dragOverTab, setDragOverTab] = useState(null);      // id of tab currently hovered during a drag
   const [renamingTab, setRenamingTab] = useState(null);      // { id, value } while renaming a tab inline
   const [linkDialog, setLinkDialog] = useState(null);        // { nodeId } when linking a node to another drawing
+  const [xCableDialog, setXCableDialog] = useState(null);    // { fromId } when adding a cable to a board on another drawing
   const [multiEdit, setMultiEdit] = useState(null);         // { kind } when editing multiple
   const [editSeg, setEditSeg] = useState(null);       // segment being edited (dialog open)
   const [selectedSeg, setSelectedSeg] = useState(null);  // segment selected (shows bend handles)
@@ -3917,6 +3971,34 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
   // Jump to a node's linked drawing (opens it as a tab and activates it).
   const goToLink = (lk) => { if (lk && lk.pid) switchToTab(lk.pid); };
 
+  // Create a cable from board `fromId` (this drawing) to board `bId` on drawing `bPid`.
+  // The cable belongs to (and is dimensioned on) THIS drawing; the target board gets a
+  // reference marker so the connection is visible on both drawings.
+  const createXCable = async (fromId, bPid, bId, targetBoard) => {
+    const bName = (projectList || []).find(p => p.id === bPid)?.name || 'Tegning';
+    const aName = (projectList || []).find(p => p.id === activeProjectId)?.name || 'Tegning';
+    const tb = targetBoard || {};
+    const hasLoad = Number(tb.Ib) > 0;
+    const cid = genCableId();
+    const cable = {
+      id: cid, from: fromId, to: bId,
+      toExt: { pid: bPid, nid: bId, name: bName },
+      function: 'Sub-board feeder',
+      V: Number(tb.V || 400), phases: Number(tb.phases || 3),
+      cable_type: Object.keys(cableTypes)[0],
+      Ib: hasLoad ? Number(tb.Ib) : 0, In: Number(tb.In_main || 0),
+      cos_phi: Number(tb.cos_phi || 0.9),
+      route: [], crossDrawing: true,
+    };
+    setLCables(prev => [...prev, cable]);
+    // Reference marker on the target board (other drawing) — visible, not double-counted.
+    if (patchDrawingNode) {
+      try { await patchDrawingNode(bPid, bId, { incomingXCable: { pid: activeProjectId, nid: fromId, name: aName, cableId: cid } }); } catch (e) {}
+    }
+    try { saveAllDrawings && saveAllDrawings({ ...draftSnapshot(), cables: [...lCables, cable] }); } catch (e) {}
+    setXCableDialog(null);
+  };
+
   // Context-menu helper: start adding a specific føringsvej option (shape or segment)
   // WITHOUT opening the "Tilføj:" options bar — the mode is set so you can place/draw directly.
   const ctxPickTray = (opt) => {
@@ -4720,6 +4802,38 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
               </g>
             );
           })}
+
+          {/* Cross-drawing cable badges — outgoing (this board feeds a board on another drawing) */}
+          {lCables.filter(c => c.toExt && lNodes[c.from]).map(c => {
+            const p = lNodes[c.from]; const lk = c.toExt;
+            const label = `⭢ kabel → ${lk.name}/${lk.nid}`;
+            const w = 12 + label.length * 5.6;
+            const bx = p.x + 12, by = p.y + 16;
+            return (
+              <g key={'xcab-'+c.id} style={{ cursor:'pointer' }}
+                 onPointerDown={(e)=>e.stopPropagation()}
+                 onClick={(e)=>{ e.stopPropagation(); if (lk.pid) switchToTab(lk.pid); }}>
+                <line x1={p.x} y1={p.y} x2={bx+6} y2={by} stroke="#0B3D91" strokeWidth="1" strokeDasharray="2,2" opacity="0.6"/>
+                <rect x={bx} y={by} width={w} height={15} rx={5} fill="#0B3D91" opacity="0.95"/>
+                <text x={bx+6} y={by+11} fontSize="8" fontWeight="bold" fill="#fff" style={{ userSelect:'none' }}>{label}</text>
+              </g>
+            );
+          })}
+          {/* Cross-drawing cable badges — incoming (a board on another drawing feeds this board) */}
+          {Object.entries(lNodes).filter(([id, p]) => p && p.incomingXCable).map(([id, p]) => {
+            const ic = p.incomingXCable;
+            const label = `⭠ kabel fra ${ic.name}/${ic.nid}`;
+            const w = 12 + label.length * 5.6;
+            const bx = p.x + 12, by = p.y + 33;
+            return (
+              <g key={'xcab-in-'+id} style={{ cursor:'pointer' }}
+                 onPointerDown={(e)=>e.stopPropagation()}
+                 onClick={(e)=>{ e.stopPropagation(); if (ic.pid) switchToTab(ic.pid); }}>
+                <rect x={bx} y={by} width={w} height={15} rx={5} fill="#00695c" opacity="0.95"/>
+                <text x={bx+6} y={by+11} fontSize="8" fontWeight="bold" fill="#fff" style={{ userSelect:'none' }}>{label}</text>
+              </g>
+            );
+          })}
         </svg>
 
         {/* Empty state — hidden as soon as any object is placed */}
@@ -4867,6 +4981,11 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
                                  loadDrawingNodes={loadDrawingNodes}
                                  onConfirm={(pid, nid)=>createLink(linkDialog.nodeId, pid, nid)}
                                  onClose={()=>setLinkDialog(null)}/>}
+      {xCableDialog && <XCableDialog fromId={xCableDialog.fromId}
+                                 projects={(projectList||[]).filter(p => p.id !== activeProjectId)}
+                                 loadDrawingNodes={loadDrawingNodes}
+                                 onConfirm={(pid, nid, board)=>createXCable(xCableDialog.fromId, pid, nid, board)}
+                                 onClose={()=>setXCableDialog(null)}/>}
       {catEdit && networkInfo.byId[catEdit] && (
         <CategoryEditModal
           net={networkInfo.byId[catEdit]}
@@ -4923,6 +5042,10 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
                 {lNodes[selectedNodes[0]]?.link && (
                   <button onClick={()=>{ removeLink(selectedNodes[0]); setCtxMenu(null); }} onMouseEnter={()=>setCtxSub(null)}
                           className={item}><X size={15} className="text-stone-500"/> Fjern link ({lNodes[selectedNodes[0]].link.name})</button>
+                )}
+                {lNodes[selectedNodes[0]]?.kind === 'board' && (
+                  <button onClick={()=>{ setXCableDialog({ fromId: selectedNodes[0] }); setCtxMenu(null); }} onMouseEnter={()=>setCtxSub(null)}
+                          className={item}><Cable size={15} className="text-stone-700"/> Kabel til tavle på anden tegning</button>
                 )}
                 <div className="border-t border-stone-100 my-1.5 mx-2"></div>
               </>
