@@ -715,14 +715,21 @@ function computeProjectCategories(drawings) {
   drawings.forEach(d => {
     Object.entries(d.segments || {}).forEach(([sid, s]) => {
       const root = sfind(gseg(d.id, sid));
-      if (!groups[root]) groups[root] = { segs: [], drawings: new Set(), widths: new Set() };
-      groups[root].segs.push({ drawingName: d.name, segId: sid, seg: s, width: d.trayTypes && d.trayTypes[s.tray_type] ? d.trayTypes[s.tray_type].width_mm : '' });
+      if (!groups[root]) groups[root] = { segs: [], drawings: new Set(), drawingIds: new Set(), widths: new Set(), explicitColors: [] };
+      groups[root].segs.push({ drawingId: d.id, drawingName: d.name, segId: sid, seg: s, width: d.trayTypes && d.trayTypes[s.tray_type] ? d.trayTypes[s.tray_type].width_mm : '' });
       groups[root].drawings.add(d.name);
+      groups[root].drawingIds.add(d.id);
       const w = d.trayTypes && d.trayTypes[s.tray_type] ? d.trayTypes[s.tray_type].width_mm : null;
       if (w) groups[root].widths.add(w);
+      if (s.color) groups[root].explicitColors.push(s.color);
     });
   });
   const cats = Object.values(groups).sort((a, b) => b.segs.length - a.segs.length);
+  // colour per category: explicit colour wins, else the widest tray-width colour
+  cats.forEach(c => {
+    const widest = Math.max(0, ...Array.from(c.widths));
+    c.color = c.explicitColors.length ? c.explicitColors[c.explicitColors.length - 1] : (widest ? trayWidthColor(widest) : '#78716c');
+  });
   // map global segment id -> category number
   const catOf = {};
   cats.forEach((c, i) => c.segs.forEach(x => { catOf[`${x.drawingName}::${x.segId}`] = i + 1; }));
@@ -1554,6 +1561,15 @@ export default function App() {
       return ns || {};
     } catch (e) { return {}; }
   };
+  // Load a drawing's nodes + segments + tray catalogue (for project-wide categories).
+  const loadDrawingData = async (projectId) => {
+    try {
+      const raw = await appStorage.get(projKey(projectId));
+      if (!raw) return { nodes: {}, segments: {}, trayTypes: DEFAULT_TRAY_TYPES };
+      const b = JSON.parse(raw);
+      return { nodes: b.nodes || {}, segments: b.segments || {}, trayTypes: { ...DEFAULT_TRAY_TYPES, ...(b.trayTypes || {}) } };
+    } catch (e) { return { nodes: {}, segments: {}, trayTypes: DEFAULT_TRAY_TYPES }; }
+  };
   // Apply a patch to one node inside another drawing's stored bundle (used to
   // write the reciprocal end of a link). Active drawing is patched in-editor.
   const patchDrawingNode = async (projectId, nodeId, patch) => {
@@ -1787,7 +1803,7 @@ export default function App() {
       {editing && <EditModal editing={editing} setEditing={setEditing} cableTypes={cableTypes} trayTypes={trayTypes} transformerTypes={transformerTypes} segments={segments} setCables={setCables} setSegments={setSegments} setCableTypes={setCableTypes} setTrayTypes={setTrayTypes} setTransformerTypes={setTransformerTypes} cables={cables} />}
       {sizingOpen && <SizingModal close={() => setSizingOpen(false)} project={project} cableTypes={cableTypes} segments={segments} cables={cables} setCables={setCables} />}
       {drawingOpen && <DrawingModal key={activeProjectId} close={() => setDrawingOpen(false)} goHome={() => { setDrawingOpen(false); setTab('project'); }} segments={segments} setSegments={setSegments} nodes={nodes} setNodes={setNodes} trayTypes={trayTypes} cables={cables} setCables={setCables} cableTypes={cableTypes} bgImage={bgImage} setBgImage={setBgImage} project={project}
-        projectList={projectList} openTabs={openTabs} activeProjectId={activeProjectId} commitDraftAndSwitch={commitDraftAndSwitch} commitDraftAndCreate={commitDraftAndCreate} closeTab={closeTab} reorderTabs={reorderTabs} renameProject={renameProject} popOutDrawing={popOutDrawing} loadDrawingNodes={loadDrawingNodes} patchDrawingNode={patchDrawingNode} collectUsedIds={collectUsedIds} saveAllDrawings={saveAllDrawings} autoSave={autoSave} toggleAutoSave={toggleAutoSave} />}
+        projectList={projectList} openTabs={openTabs} activeProjectId={activeProjectId} commitDraftAndSwitch={commitDraftAndSwitch} commitDraftAndCreate={commitDraftAndCreate} closeTab={closeTab} reorderTabs={reorderTabs} renameProject={renameProject} popOutDrawing={popOutDrawing} loadDrawingNodes={loadDrawingNodes} loadDrawingData={loadDrawingData} patchDrawingNode={patchDrawingNode} collectUsedIds={collectUsedIds} saveAllDrawings={saveAllDrawings} autoSave={autoSave} toggleAutoSave={toggleAutoSave} />}
       {newProjectOpen && <NewProjectModal close={() => setNewProjectOpen(false)} createProject={createProject} />}
     </div>
   );
@@ -2705,7 +2721,7 @@ function AnalysisTab({ cables, A, cableTypes, segments }) {
 // =========================
 // DRAWING MODAL — interactive cable tray layout editor
 // =========================
-function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project, projectList, openTabs, activeProjectId, commitDraftAndSwitch, commitDraftAndCreate, closeTab, reorderTabs, renameProject, popOutDrawing, loadDrawingNodes, patchDrawingNode, collectUsedIds, saveAllDrawings, autoSave, toggleAutoSave }) {
+function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, trayTypes, cables, setCables, cableTypes, bgImage, setBgImage, project, projectList, openTabs, activeProjectId, commitDraftAndSwitch, commitDraftAndCreate, closeTab, reorderTabs, renameProject, popOutDrawing, loadDrawingNodes, loadDrawingData, patchDrawingNode, collectUsedIds, saveAllDrawings, autoSave, toggleAutoSave }) {
   // local working state
   // Node shape: { x, y, kind: 'junction'|'board'|'load', ...meta }
   //   board meta: { board_type, In_main }
@@ -2766,6 +2782,8 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
   };
   // Opacity per colour category (hex → 0..1) — mirrors per-segment opacity for the slider UI.
   const [catPanel, setCatPanel] = useState(false);            // show network-category panel
+  const [projectCats, setProjectCats] = useState(null);       // project-wide categories (across all drawings)
+  const [projectCatsLoading, setProjectCatsLoading] = useState(false);
   const [showLegends, setShowLegends] = useState(false);      // show per-segment info legends
   const [addPanel, setAddPanel] = useState(false);            // "Tilføj nyt objekt" category bar open
   const [addCategory, setAddCategory] = useState(null);       // 'trays'|'boards'|'loads'|'cables'
@@ -3144,6 +3162,30 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
   const colorCategories = useMemo(() => networkInfo.networks.map(n => ({
     id: n.id, color: n.color, count: n.count, widths: n.widths, segIds: n.segIds,
   })), [networkInfo]);
+
+  // Project-wide categories (across ALL drawings, merged via cross-drawing links).
+  // Recomputed whenever the category panel is open and this drawing changes.
+  useEffect(() => {
+    if (!catPanel) return;
+    let alive = true;
+    setProjectCatsLoading(true);
+    (async () => {
+      const drawings = [];
+      for (const p of (projectList || [])) {
+        if (p.id === activeProjectId) {
+          drawings.push({ id: p.id, name: p.name, nodes: lNodes, segments: lSegs, trayTypes });
+        } else if (loadDrawingData) {
+          try { const d = await loadDrawingData(p.id); drawings.push({ id: p.id, name: p.name, nodes: d.nodes, segments: d.segments, trayTypes: d.trayTypes }); }
+          catch (e) { drawings.push({ id: p.id, name: p.name, nodes: {}, segments: {}, trayTypes }); }
+        }
+      }
+      if (!alive) return;
+      try { const { cats } = computeProjectCategories(drawings); setProjectCats(cats); }
+      catch (e) { setProjectCats([]); }
+      setProjectCatsLoading(false);
+    })();
+    return () => { alive = false; };
+  }, [catPanel, lSegs, lNodes, trayTypes]);
 
   // LS tracks present on each segment, derived from the cables routed through it.
   // LS1 = main feeders/ties/UPS; LS2 = loaded (Ib/Iz > threshold); LS3 = lightly loaded.
@@ -4540,58 +4582,77 @@ function DrawingModal({ close, goHome, segments, setSegments, nodes, setNodes, t
       {catPanel && (
         <div className="bg-white border-b shadow-sm px-3 py-2 max-h-[45vh] overflow-y-auto">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-sm font-semibold text-stone-800 flex items-center gap-1"><Layers size={15}/> Føringsvej-netværk</span>
+            <span className="text-sm font-semibold text-stone-800 flex items-center gap-1"><Layers size={15}/> Kategorier · alle tegninger</span>
             <button onClick={()=>setCatPanel(false)} className="text-xs px-2 py-1 bg-stone-100 rounded">Luk</button>
           </div>
-          {colorCategories.length === 0 ? (
+          {(projectCatsLoading && !projectCats) ? (
+            <p className="text-xs text-stone-400">Beregner kategorier på tværs af tegninger …</p>
+          ) : (!projectCats || projectCats.length === 0) ? (
             <p className="text-xs text-stone-500">Ingen føringsveje endnu.</p>
           ) : (
             <div className="space-y-2">
-              {colorCategories.map((cat, idx) => {
-                const firstSeg = lSegs[cat.segIds[0]];
-                const op = firstSeg?.opacity ?? 1;
+              {projectCats.map((cat, idx) => {
                 const widths = Array.from(cat.widths).sort((a,b)=>a-b);
+                const multi = (cat.drawingIds ? cat.drawingIds.size : 1) > 1;
+                const curSegs = cat.segs.filter(x => x.drawingId === activeProjectId).map(x => x.segId);
+                const curNetId = curSegs.length ? networkInfo.segNet[curSegs[0]] : null;
+                const firstCur = curSegs.length ? lSegs[curSegs[0]] : null;
+                const op = firstCur?.opacity ?? 1;
+                const perDrawing = {};
+                cat.segs.forEach(x => { (perDrawing[x.drawingId] = perDrawing[x.drawingId] || { name: x.drawingName, n: 0 }).n++; });
                 const palette = ['#1565C0', '#2e7d32', '#c62828', '#f9a825', '#6a1b9a', '#00838f', '#37474F', '#e91e63'];
                 return (
-                  <div key={cat.id} className="border border-stone-200 rounded-lg p-2">
-                    <div className="flex items-center gap-2 mb-1.5">
+                  <div key={idx} className="border border-stone-200 rounded-lg p-2">
+                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                       <span className="inline-block w-5 h-5 rounded-full border border-stone-300 shrink-0" style={{ background: cat.color }}/>
-                      <span className="text-xs font-semibold text-stone-700">Net {idx+1}</span>
-                      <span className="text-xs text-stone-400">({cat.count} segm.{widths.length ? ` · ${widths.join('/')} mm` : ''})</span>
-                      <button onClick={()=>straightenNetwork(cat.id)}
-                              className="ml-auto text-xs px-2 py-1 bg-amber-100 text-amber-900 rounded flex items-center gap-1">
-                        <GitBranch size={11}/> Ret op
-                      </button>
+                      <span className="text-xs font-semibold text-stone-700">Kategori {idx+1}</span>
+                      <span className="text-xs text-stone-400">({cat.segs.length} segm.{widths.length ? ` · ${widths.join('/')} mm` : ''})</span>
+                      {multi && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-800 font-semibold">på tværs af {cat.drawingIds.size} tegninger</span>}
                     </div>
-                    {/* Network colour swatches */}
-                    <div className="flex items-center gap-1.5 flex-wrap mb-1.5">
-                      <span className="text-[11px] text-stone-500">Farve:</span>
-                      {palette.map(c => (
-                        <button key={c} onClick={()=>setNetworkColor(cat.id, c)}
-                                className={`w-5 h-5 rounded-full border-2 ${cat.color===c ? 'border-stone-800 ring-1 ring-stone-300' : 'border-stone-300'}`}
-                                style={{ background: c }}/>
+                    {/* Which drawings the category spans (tap to jump) */}
+                    <div className="flex flex-wrap gap-1 mb-1.5">
+                      {Object.entries(perDrawing).map(([did, info]) => (
+                        <button key={did} disabled={did === activeProjectId} onClick={()=>{ if (did !== activeProjectId) switchToTab(did); }}
+                                className={`text-[11px] px-2 py-0.5 rounded-full border ${did === activeProjectId ? 'bg-stone-800 text-white border-stone-800' : 'bg-white border-stone-300 text-stone-600 hover:bg-stone-100'}`}>
+                          {info.name}: {info.n} segm.{did !== activeProjectId ? ' →' : ''}
+                        </button>
                       ))}
-                      <input type="color" value={/^#/.test(cat.color)?cat.color:'#1565C0'} onChange={e=>setNetworkColor(cat.id, e.target.value)}
-                             className="w-5 h-5 rounded cursor-pointer border border-stone-300" title="Egen farve"/>
-                      <button onClick={()=>setNetworkColor(cat.id, '')} className="text-[11px] text-stone-400 underline ml-1" title="Brug auto-farve fra bredde">auto</button>
                     </div>
-                    <label className="flex items-center gap-2 text-xs text-stone-600">
-                      Opacitet
-                      <input type="range" min="10" max="100" value={op*100}
-                             onChange={e=>setNetworkOpacity(cat.id, Number(e.target.value)/100)}
-                             className="flex-1"/>
-                      <span className="w-9 text-right">{Math.round(op*100)}%</span>
-                    </label>
-                    <button onClick={()=>setCatEdit(cat.id)}
-                            className="w-full mt-1.5 py-1.5 bg-stone-800 text-white rounded text-xs font-semibold flex items-center justify-center gap-1">
-                      <Edit2 size={12}/> Rediger alle objekter i Net {idx+1}
-                    </button>
+                    {curNetId ? (
+                      <>
+                        <div className="flex items-center gap-1.5 flex-wrap mb-1.5">
+                          <span className="text-[11px] text-stone-500">Farve:</span>
+                          {palette.map(c => (
+                            <button key={c} onClick={()=>setNetworkColor(curNetId, c)}
+                                    className={`w-5 h-5 rounded-full border-2 ${cat.color===c ? 'border-stone-800 ring-1 ring-stone-300' : 'border-stone-300'}`}
+                                    style={{ background: c }}/>
+                          ))}
+                          <input type="color" value={/^#/.test(cat.color)?cat.color:'#1565C0'} onChange={e=>setNetworkColor(curNetId, e.target.value)}
+                                 className="w-5 h-5 rounded cursor-pointer border border-stone-300" title="Egen farve"/>
+                          <button onClick={()=>setNetworkColor(curNetId, '')} className="text-[11px] text-stone-400 underline ml-1" title="Brug auto-farve fra bredde">auto</button>
+                        </div>
+                        <label className="flex items-center gap-2 text-xs text-stone-600">
+                          Opacitet
+                          <input type="range" min="10" max="100" value={op*100}
+                                 onChange={e=>setNetworkOpacity(curNetId, Number(e.target.value)/100)}
+                                 className="flex-1"/>
+                          <span className="w-9 text-right">{Math.round(op*100)}%</span>
+                        </label>
+                        <div className="flex gap-1 mt-1.5">
+                          <button onClick={()=>straightenNetwork(curNetId)} className="flex-1 py-1.5 bg-amber-100 text-amber-900 rounded text-xs font-semibold flex items-center justify-center gap-1"><GitBranch size={12}/> Ret op</button>
+                          <button onClick={()=>setCatEdit(curNetId)} className="flex-1 py-1.5 bg-stone-800 text-white rounded text-xs font-semibold flex items-center justify-center gap-1"><Edit2 size={12}/> Rediger</button>
+                        </div>
+                        {multi && <p className="text-[10px] text-stone-400 mt-1">Farve, opacitet og redigering gælder denne tegnings del af kategorien.</p>}
+                      </>
+                    ) : (
+                      <p className="text-[11px] text-stone-400">Ingen segmenter i denne kategori på den aktuelle tegning — åbn en af tegningerne ovenfor for at redigere.</p>
+                    )}
                   </div>
                 );
               })}
             </div>
           )}
-          <p className="text-[11px] text-stone-400 mt-2">Forbundne føringsveje udgør ét netværk og deler én farve (men kan have forskellige bredder). "Ret op" gør netværket vinkelret.</p>
+          <p className="text-[11px] text-stone-400 mt-2">En kategori samler føringsveje, der er forbundet gennem knuder — også på tværs af tegninger via off-page-links. Tavler og laster afgrænser kategorier.</p>
         </div>
       )}
 
